@@ -1,0 +1,32 @@
+[
+  {
+    "id": "test-task-1",
+    "file": "projects/launch-new-onboarding.md",
+    "module": "projects",
+    "title": "Draft launch checklist for onboarding rollout",
+    "section": "## Open Actions",
+    "status": "open",
+    "tags": ["test", "onboarding"],
+    "last_updated": "2026-05-23"
+  },
+  {
+    "id": "test-task-2",
+    "file": "people/elaine-liman.md",
+    "module": "people",
+    "title": "Prepare talking points for weekly 1:1",
+    "section": "## Talk About",
+    "status": "open",
+    "tags": ["test", "people"],
+    "last_updated": "2026-05-23"
+  },
+  {
+    "id": "test-task-3",
+    "file": "projects/memory-os-polish.md",
+    "module": "projects",
+    "title": "Follow up with design on status chip colors",
+    "section": "## Delegations",
+    "status": "open",
+    "tags": ["test", "design"],
+    "last_updated": "2026-05-23"
+  }
+]
