@@ -7,6 +7,7 @@ export function useVoiceDictation() {
 
   const [isListening,  setIsListening]  = useState(false)
   const [transcript,   setTranscript]   = useState('')
+  const [interimTranscript, setInterimTranscript] = useState('')
   const recognitionRef = useRef(null)
 
   const isSupported = Boolean(SR)
@@ -24,27 +25,40 @@ export function useVoiceDictation() {
 
     const rec = new SR()
     rec.continuous     = true
-    rec.interimResults = false
+    rec.interimResults = true
     rec.lang           = 'en-US'
 
     rec.onresult = (event) => {
-      const segment = Array.from(event.results)
-        .slice(event.resultIndex)
-        .filter(r => r.isFinal)
-        .map(r => r[0].transcript.trim())
-        .join(' ')
-      if (segment) {
-        setTranscript(prev => prev ? prev + ' ' + segment : segment)
+      let finalSegment = ''
+      let interimSegment = ''
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const res = event.results[i]
+        const chunk = res?.[0]?.transcript?.trim() || ''
+        if (!chunk) continue
+        if (res.isFinal) {
+          finalSegment = finalSegment ? `${finalSegment} ${chunk}` : chunk
+        } else {
+          interimSegment = interimSegment ? `${interimSegment} ${chunk}` : chunk
+        }
       }
+
+      if (finalSegment) {
+        setTranscript((prev) => (prev ? `${prev} ${finalSegment}` : finalSegment))
+      }
+
+      setInterimTranscript(interimSegment)
     }
 
     rec.onerror = () => {
       setIsListening(false)
+      setInterimTranscript('')
       recognitionRef.current = null
     }
 
     rec.onend = () => {
       setIsListening(false)
+      setInterimTranscript('')
       recognitionRef.current = null
     }
 
@@ -55,12 +69,14 @@ export function useVoiceDictation() {
 
   const stop = useCallback(() => {
     recognitionRef.current?.stop()
+    setInterimTranscript('')
     setIsListening(false)
   }, [])
 
   const reset = useCallback(() => {
     setTranscript('')
+    setInterimTranscript('')
   }, [])
 
-  return { isListening, isSupported, start, stop, transcript, reset }
+  return { isListening, isSupported, start, stop, transcript, interimTranscript, reset }
 }

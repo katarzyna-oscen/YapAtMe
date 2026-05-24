@@ -81,7 +81,7 @@ function toggleTaskItem(view, nodePos) {
   return true
 }
 
-function EditorCore({ initialValue, onChange, tagSuggestions = [] }) {
+function EditorCore({ initialValue, onChange, tagSuggestions = [], interimPreview = '' }) {
   const onChangeRef = useRef(onChange)
   const initialValueRef = useRef(initialValue)
   const lastMarkdownRef = useRef(initialValue)
@@ -248,7 +248,34 @@ function EditorCore({ initialValue, onChange, tagSuggestions = [] }) {
   }, [])
   return (
     <>
-      <Milkdown />
+      <div style={{ position: 'relative' }}>
+        <Milkdown />
+        <div
+          aria-hidden="true"
+          style={{
+            pointerEvents: 'none',
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            padding: '8px 14px',
+            color: 'oklch(0.85 0.12 95 / 0.75)',
+            background: 'linear-gradient(180deg, transparent, oklch(0.22 0.02 250 / 0.16))',
+            borderTop: '1px dashed oklch(0.85 0.12 95 / 0.35)',
+            fontStyle: 'italic',
+            fontSize: 13,
+            lineHeight: 1.4,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            opacity: interimPreview ? 1 : 0,
+            transform: interimPreview ? 'translateY(0)' : 'translateY(4px)',
+            transition: 'opacity 180ms ease, transform 180ms ease',
+          }}
+        >
+          {interimPreview || ' '}
+        </div>
+      </div>
       {tagMenu.open && menuItems.length > 0 && (
         <div
           style={{
@@ -290,10 +317,15 @@ function EditorCore({ initialValue, onChange, tagSuggestions = [] }) {
   )
 }
 
-export function MarkdownEditorComponent({ initialValue, onChange, tagSuggestions }) {
+export function MarkdownEditorComponent({ initialValue, onChange, tagSuggestions, interimPreview = '' }) {
   return (
     <MilkdownProvider>
-      <EditorCore initialValue={initialValue} onChange={onChange} tagSuggestions={tagSuggestions} />
+      <EditorCore
+        initialValue={initialValue}
+        onChange={onChange}
+        tagSuggestions={tagSuggestions}
+        interimPreview={interimPreview}
+      />
     </MilkdownProvider>
   )
 }

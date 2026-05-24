@@ -11,6 +11,19 @@ function getPriorityChip(task) {
   return null
 }
 
+function renderLinkedText(text) {
+  const parts = String(text || '').split(/(\[\[[^\]]+\]\])/g)
+  return parts.map((part, idx) => {
+    const m = part.match(/^\[\[([^\]]+)\]\]$/)
+    if (!m) return <span key={idx}>{part}</span>
+    return (
+      <span key={idx} style={{ color: 'oklch(0.88 0.16 96)', textDecoration: 'underline', textDecorationColor: 'oklch(0.88 0.16 96 / 0.45)' }}>
+        {m[1]}
+      </span>
+    )
+  })
+}
+
 export default function TaskPanel({ tasks = [], sections = [], onResolve }) {
   const groupedSections = sections
     .map((section) => ({
@@ -71,7 +84,7 @@ export default function TaskPanel({ tasks = [], sections = [], onResolve }) {
                   }}
                 />
                 <div style={{ fontSize: 13, color: 'var(--text)', minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ minWidth: 0, flex: 1 }}>{task.title}</span>
+                  <span style={{ minWidth: 0, flex: 1 }}>{renderLinkedText(task.title)}</span>
                   {getPriorityChip(task) && (
                     <span
                       style={{

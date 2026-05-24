@@ -44,12 +44,34 @@ export async function appendTaskEntry(readFile, writeFile, entry) {
 
 export async function resolveTaskEntry(readFile, writeFile, entryId) {
   const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
   const updated = existing.map((entry) => {
     if (entry.id !== entryId) return entry
     return {
       ...entry,
       status: 'done',
-      last_updated: new Date().toISOString().split('T')[0],
+      resolved_at: today,
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+export async function deleteTaskEntry(readFile, writeFile, entryId) {
+  const existing = await readTasksIndex(readFile)
+  await writeTasksIndex(writeFile, existing.filter((entry) => entry.id !== entryId))
+}
+
+export async function unresolveTaskEntry(readFile, writeFile, entryId) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry.id !== entryId) return entry
+    const { resolved_at, ...rest } = entry
+    return {
+      ...rest,
+      status: 'open',
+      last_updated: today,
     }
   })
   await writeTasksIndex(writeFile, updated)

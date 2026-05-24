@@ -1,6 +1,20 @@
+import React from 'react'
 import { useState, useEffect, useCallback } from 'react'
 import { Icon, SectionHeader, AgeChip, Tag } from './dashboard-top'
 import { daysAgo } from './CommandPage'
+
+function renderLinkedText(text) {
+  const parts = String(text || '').split(/(\[\[[^\]]+\]\])/g)
+  return parts.map((part, idx) => {
+    const m = part.match(/^\[\[([^\]]+)\]\]$/)
+    if (!m) return <span key={idx}>{part}</span>
+    return (
+      <span key={idx} style={{ color: 'oklch(0.88 0.16 96)', textDecoration: 'underline', textDecorationColor: 'oklch(0.88 0.16 96 / 0.45)' }}>
+        {m[1]}
+      </span>
+    )
+  })
+}
 
 // ─── Draggable list hook ──────────────────────────────────────────────────────
 
@@ -113,8 +127,8 @@ function ProjectCard({ project, handlers, isDragging, isOver, onNavigate }) {
       <div style={{ marginTop: 'auto', paddingTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <StatusPill status={project.status} />
-          <span style={{ fontSize: 11, color: 'var(--text-very-dim)' }}>{project.openActions} actions</span>
           <AgeChip days={daysAgo(project.last_updated)} />
+          <span style={{ fontSize: 11, color: 'var(--text-very-dim)' }}>{project.openActions} actions</span>
           {domainTags.length > 0 && (
             <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 5 }}>
               {domainTags.map(t => <Tag key={t}>{t}</Tag>)}
@@ -159,10 +173,11 @@ function ProjectsSection({ projects, onOrderChange, onNavigate }) {
 
 // ─── Tasks section ────────────────────────────────────────────────────────────
 
-const CATEGORY_HUE = { 'needs-call': 22, actions: 150, delegate: 230, decisions: 80 }
+const CATEGORY_HUE = { 'needs-call': 22, 'talk-about': 80, actions: 150, delegate: 230, decisions: 80 }
 
 function taskCategory(task) {
   if (task.tags?.some(t => t === 'urgent' || t === 'important')) return 'needs-call'
+  if (task.section === '## Talk About')                          return 'talk-about'
   if (task.section === '## Open Actions')                         return 'actions'
   if (task.section === '## Delegations' || task.section === '## Delegate') return 'delegate'
   if (task.section === '## Decisions')                            return 'decisions'
@@ -217,7 +232,7 @@ function ActionRow({ task, onResolve, handlers, isDragging, isOver, isLast }) {
       </button>
       {/* title */}
       <span style={{ flex: 1, fontSize: 13.5, color: 'var(--text)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {task.title}
+        {renderLinkedText(task.title)}
       </span>
       {/* file label */}
       <span style={{ fontSize: 11.5, color: 'var(--text-very-dim)', whiteSpace: 'nowrap' }}>{fileLabel}</span>
@@ -375,13 +390,70 @@ function IdeasSection({ ideas, onOrderChange, onNavigate }) {
 
 // ─── Composed export ──────────────────────────────────────────────────────────
 
-export default function DashboardSections({ projects, tasks, people, ideas, onResolveTask, onOrderChange, onNavigate }) {
+export default function DashboardSections({
+  projects,
+  tasks,
+  people,
+  ideas,
+  onResolveTask,
+  onOrderChange,
+  onNavigate,
+  enabledModules,
+  sectionConfig,
+}) {
+  const DEFAULT_ORDER = ['projects', 'tasks', 'people', 'ideas']
+
+  // Stored order or default
+  const order = sectionConfig?.order?.length ? sectionConfig.order : DEFAULT_ORDER
+
+  // A section is visible if:
+  //   1. sectionConfig.visibility doesn't explicitly hide it, AND
+  //   2. its parent module isn't disabled
+  const isVisible = (id) => {
+    if (sectionConfig?.visibility?.[id] === false) return false
+    if (id === 'projects' && enabledModules?.projects === false) return false
+    if (id === 'people'   && enabledModules?.people   === false) return false
+    if (id === 'ideas'    && enabledModules?.ideas    === false) return false
+    return true
+  }
+
+  const sections = {
+    projects: () => (
+      <ProjectsSection
+        projects={projects}
+        onOrderChange={onOrderChange}
+        onNavigate={onNavigate}
+      />
+    ),
+    tasks: () => (
+      <TasksSection
+        tasks={tasks}
+        onResolveTask={onResolveTask}
+        onOrderChange={onOrderChange}
+      />
+    ),
+    people: () => (
+      <PeopleSection
+        people={people}
+        onOrderChange={onOrderChange}
+        onNavigate={onNavigate}
+      />
+    ),
+    ideas: () => (
+      <IdeasSection
+        ideas={ideas}
+        onOrderChange={onOrderChange}
+        onNavigate={onNavigate}
+      />
+    ),
+  }
+
   return (
     <>
-      <ProjectsSection projects={projects} onOrderChange={onOrderChange} onNavigate={onNavigate} />
-      <TasksSection    tasks={tasks}       onResolveTask={onResolveTask} onOrderChange={onOrderChange} />
-      <PeopleSection   people={people}     onOrderChange={onOrderChange} onNavigate={onNavigate} />
-      <IdeasSection    ideas={ideas}       onOrderChange={onOrderChange} onNavigate={onNavigate} />
+      {order.map(id => {
+        if (!isVisible(id) || !sections[id]) return null
+        return <React.Fragment key={id}>{sections[id]()}</React.Fragment>
+      })}
     </>
   )
 }

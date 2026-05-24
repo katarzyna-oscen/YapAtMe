@@ -1,5 +1,18 @@
 import { useMemo, useState } from 'react'
 
+function renderWikilinks(text) {
+	const parts = String(text || '').split(/(\[\[[^\]]+\]\])/g)
+	return parts.map((part, idx) => {
+		const m = part.match(/^\[\[([^\]]+)\]\]$/)
+		if (!m) return <span key={idx}>{part}</span>
+		return (
+			<span key={idx} style={{ color: 'oklch(0.88 0.16 96)', textDecoration: 'underline', textDecorationColor: 'oklch(0.88 0.16 96 / 0.45)' }}>
+				{m[1]}
+			</span>
+		)
+	})
+}
+
 export default function RoutingReview({ result, onApprove, onDismiss, onDone, onCreateEntity }) {
 	const [approvedIds, setApprovedIds] = useState(new Set())
 	const [createdKeys, setCreatedKeys] = useState(new Set())
@@ -76,7 +89,7 @@ export default function RoutingReview({ result, onApprove, onDismiss, onDone, on
 
 				<div className="space-y-3">
 					{remaining.length === 0 ? (
-						<div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-6 text-center text-sm text-[var(--text-muted)]">
+							<div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-6 text-center text-sm text-[var(--text-muted)]">
 							All proposed changes have been handled.
 						</div>
 					) : (
@@ -84,7 +97,7 @@ export default function RoutingReview({ result, onApprove, onDismiss, onDone, on
 							<div key={change.id} className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
 								<div className="flex items-start justify-between gap-4">
 									<div className="min-w-0">
-										<p className="text-sm font-medium text-[var(--text-primary)] truncate">{change.title || 'Proposed update'}</p>
+											<p className="text-sm font-medium text-[var(--text-primary)] truncate">{renderWikilinks(change.title || 'Proposed update')}</p>
 										<p className="text-xs text-[var(--text-muted)] mt-0.5 truncate">
 											{change.target_file} · {change.target_section} · {change.marker}
 										</p>
@@ -104,9 +117,9 @@ export default function RoutingReview({ result, onApprove, onDismiss, onDone, on
 										</button>
 									</div>
 								</div>
-								<pre className="mt-3 text-xs text-[var(--text-secondary)] whitespace-pre-wrap font-mono bg-[var(--bg-input)] border border-[var(--border)] rounded p-3">
-									{change.content}
-								</pre>
+									<div className="mt-3 text-xs text-[var(--text-secondary)] whitespace-pre-wrap font-mono bg-[var(--bg-input)] border border-[var(--border)] rounded p-3">
+										{renderWikilinks(change.content)}
+									</div>
 							</div>
 						))
 					)}

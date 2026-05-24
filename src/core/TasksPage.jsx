@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { resolveTask } from '../lib/taskResolver'
+import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry } from '../lib/tasksIndex'
 import { addTaskComment } from '../lib/taskMarker'
 import { appendToSection } from '../lib/vaultWriter'
 
 const TASK_CATEGORIES = [
   { id: 'needs-call', label: 'Needs Your Call', hue: 25, description: 'blockers and decisions waiting on you' },
+  { id: 'talk-about', label: 'Talk About', hue: 80, description: 'follow-up conversations to have' },
   { id: 'actions', label: 'Actions', hue: 150, description: 'work to do yourself' },
   { id: 'delegate', label: 'Delegate', hue: 230, description: 'to hand off to someone else' },
   { id: 'decisions', label: 'Decisions', hue: 80, description: 'calls to make, options to weigh' },
@@ -17,7 +18,7 @@ const SECTION_TO_CATEGORY = {
   '## Delegations': 'delegate',
   '## Delegate': 'delegate',
   '## Decisions': 'decisions',
-  '## Talk About': 'needs-call',
+  '## Talk About': 'talk-about',
 }
 
 const CATEGORY_TO_SECTION = {
@@ -25,6 +26,7 @@ const CATEGORY_TO_SECTION = {
   delegate: '## Delegate',
   decisions: '## Decisions',
   'needs-call': '## Talk About',
+  'talk-about': '## Talk About',
 }
 
 const CATEGORY_IDS = new Set(TASK_CATEGORIES.map((category) => category.id))
@@ -52,9 +54,27 @@ function normalizeTaskDisplayText(raw) {
 }
 
 function indexEntryToTask(entry) {
-  const inferredCategory = entry.status === 'done'
+  let inferredCategory = entry.status === 'done'
     ? 'done'
     : (CATEGORY_IDS.has(entry.category) ? entry.category : (SECTION_TO_CATEGORY[entry.section] ?? 'actions'))
+
+  // Backward compatibility for old Talk About entries stored as needs-call.
+  if (
+    inferredCategory === 'needs-call'
+    && entry.section === '## Talk About'
+    && !Array.isArray(entry.tags)
+  ) {
+    inferredCategory = 'talk-about'
+  }
+
+  if (
+    inferredCategory === 'needs-call'
+    && entry.section === '## Talk About'
+    && Array.isArray(entry.tags)
+    && !entry.tags.some((tag) => ['urgent', 'important', 'priority'].includes(String(tag).toLowerCase()))
+  ) {
+    inferredCategory = 'talk-about'
+  }
 
   return {
     id: entry.id,
@@ -286,8 +306,13 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
     ))
 
     try {
+      if (nowDone) {
+        await resolveTaskEntry(readFile, writeFile, id)
+      } else {
+        await unresolveTaskEntry(readFile, writeFile, id)
+      }
+
       await persistTaskMeta(id, {
-        status: nowDone ? 'done' : 'open',
         category: nowDone ? 'done' : restoreCategory,
         prevCategory: nowDone ? previousCategory : null,
       })
@@ -297,7 +322,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         item.id === id ? { ...item, done: task.done, category: task.category, prevCategory: task.prevCategory ?? null } : item,
       ))
     }
-  }, [tasks, persistTaskMeta])
+  }, [tasks, persistTaskMeta, readFile, writeFile])
 
   const addTask = useCallback(async () => {
     const text = draft.trim()
@@ -350,10 +375,13 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
   }, [draft, draftEntityPath, draftCategory, readFile, writeFile, fileExists])
 
   const removeAllDone = useCallback(async (ids) => {
+    const ok = window.confirm("Removed tasks are permanently deleted and won't appear in your daily Updates. Mark as done instead to keep a record. Continue?")
+    if (!ok) return
+
     setTasks((prev) => prev.filter((task) => !ids.includes(task.id)))
     for (const id of ids) {
       try {
-        await resolveTask(readFile, writeFile, id)
+        await deleteTaskEntry(readFile, writeFile, id)
       } catch {}
     }
   }, [readFile, writeFile])
@@ -555,7 +583,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
                   onSetCommentsOpen={(open) => setCommentsExpanded(task.id, open)}
                   onDelete={() => {
                     setTasks((prev) => prev.filter((item) => item.id !== task.id))
-                    resolveTask(readFile, writeFile, task.id).catch(async (err) => {
+                    deleteTaskEntry(readFile, writeFile, task.id).catch(async (err) => {
                       console.error('Remove failed, fallback index removal:', err?.message || err)
                       await removeTaskFromIndex(task.id)
                     })

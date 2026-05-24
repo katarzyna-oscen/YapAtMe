@@ -6,6 +6,7 @@ import DashboardTop from './dashboard-top'
 import DashboardSections from './dashboard-sections'
 
 const WEEK_SUMMARY_PATH = 'context/week-summary.json'
+const DAILY_UPDATES_PATH = 'context/daily-updates.json'
 const STALE_PROJECT_DAYS = 21
 const LAPSED_PERSON_DAYS = 28
 const CADENCE_WINDOW_DAYS = 30
@@ -84,29 +85,21 @@ function buildActivityData(tasks, inboxFiles) {
   return cells
 }
 
-function computeNeedsCall(tasks, projects, people) {
+function computeNeedsCall(tasks, enabledModules = {}) {
   const items = []
   for (const task of tasks) {
-    const isUrgent = task.tags?.some(t => t === 'urgent' || t === 'important')
+    const folder = String(task.file || '').split('/')[0]
+    if ((folder === 'projects' || folder === 'people' || folder === 'ideas') && enabledModules?.[folder] === false) {
+      continue
+    }
+    const isUrgent = task.tags?.some(t => {
+      const tag = String(t || '').toLowerCase()
+      return tag === 'urgent' || tag === 'important' || tag === 'priority'
+    })
     if (isUrgent) items.push({
       id: task.id, kind: 'task', title: task.title, file: task.file,
       reason: `${task.tags.find(t => t === 'urgent' || t === 'important')} — ${task.section.replace('## ', '')}`,
       age: daysAgo(task.last_updated),
-    })
-  }
-  for (const p of projects) {
-    if (p.status === 'Done') continue
-    const age = daysAgo(p.last_updated)
-    if (age >= STALE_PROJECT_DAYS) items.push({
-      id: p.path, kind: 'project', title: p.name, file: p.path,
-      reason: `${age}d since last update — revisit or drop`, age,
-    })
-  }
-  for (const p of people) {
-    const age = daysAgo(p.last_updated)
-    if (age >= LAPSED_PERSON_DAYS) items.push({
-      id: p.path, kind: 'person', title: p.full_name, file: p.path,
-      reason: `no contact in ${age} days`, age,
     })
   }
   return items.sort((a, b) => b.age - a.age)
@@ -121,7 +114,9 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
   const [activityData, setActivity]         = useState([])
   const [needsCall, setNeedsCall]           = useState([])
   const [weekSummary, setWeekSummary]       = useState(null)
+  const [dailyUpdates, setDailyUpdates]     = useState(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
+  const [updatesLoading, setUpdatesLoading] = useState(false)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -140,30 +135,39 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
         readFrontmatters(readFile, ideaFiles,    'ideas'),
       ])
 
-      const projectList = rawProjects.map(({ path, fields }) => ({
+      const projectList = rawProjects.map(({ path, fields }) => {
+        const safeFields = fields || {}
+        return ({
         path,
-        name:         fields.name || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
-        status:       fields.status || 'Untriaged',
-        core_problem: fields.core_problem || '',
-        domain:       fields.domain || '',
-        last_updated: fields.last_updated || '',
+        name:         safeFields.name || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
+        status:       safeFields.status || 'Untriaged',
+        core_problem: safeFields.core_problem || '',
+        domain:       safeFields.domain || '',
+        last_updated: safeFields.last_updated || '',
         openActions:  openTasks.filter(t => t.file === path && t.section === '## Open Actions').length,
-      }))
+      })
+      })
 
-      const peopleList = rawPeople.map(({ path, fields }) => ({
+      const peopleList = rawPeople.map(({ path, fields }) => {
+        const safeFields = fields || {}
+        return ({
         path,
-        full_name:    fields.full_name || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
-        role:         fields.role || '',
-        last_updated: fields.last_updated || '',
-        cadence:      computeCadence(path, allTasks, fields.last_updated),
-      }))
+        full_name:    safeFields.full_name || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
+        role:         safeFields.role || '',
+        last_updated: safeFields.last_updated || '',
+        cadence:      computeCadence(path, allTasks, safeFields.last_updated),
+      })
+      })
 
-      const ideaList = rawIdeas.map(({ path, fields }) => ({
+      const ideaList = rawIdeas.map(({ path, fields }) => {
+        const safeFields = fields || {}
+        return ({
         path,
-        name:         fields.name || fields.title || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
-        status:       fields.status || 'Spark',
-        last_updated: fields.last_updated || fields.origin || '',
-      }))
+        name:         safeFields.name || safeFields.title || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
+        status:       safeFields.status || 'Spark',
+        last_updated: safeFields.last_updated || safeFields.origin || '',
+      })
+      })
 
       const order      = settings?.dashboardOrder || {}
       const tasksOrder = settings?.tasksOrder || []
@@ -174,11 +178,19 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
       setTasks(applyOrder(openTasks,      tasksOrder,     t => t.id))
 
       setActivity(buildActivityData(allTasks, inboxFiles))
-      setNeedsCall(computeNeedsCall(openTasks, projectList, peopleList))
+      setNeedsCall(computeNeedsCall(openTasks, settings?.enabledModules || {}))
 
-      let savedSummary = null
-      try { savedSummary = JSON.parse(await readFile(WEEK_SUMMARY_PATH)) } catch {}
+      const [savedSummary, savedUpdates] = await Promise.all([
+        (async () => {
+          try { return JSON.parse(await readFile(WEEK_SUMMARY_PATH)) } catch { return null }
+        })(),
+        (async () => {
+          try { return JSON.parse(await readFile(DAILY_UPDATES_PATH)) } catch { return null }
+        })(),
+      ])
+
       setWeekSummary(savedSummary)
+      setDailyUpdates(savedUpdates)
     } catch (err) {
       console.error('Dashboard load failed:', err)
     } finally {
@@ -225,6 +237,49 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
     }
   }
 
+  const handleGenerateUpdates = async () => {
+    if (!settings?.apiKey) return
+    setUpdatesLoading(true)
+    try {
+      const allTasks = await readTasksIndex(readFile)
+      const y = new Date(Date.now() - 86_400_000)
+      const yesterday = y.toISOString().slice(0, 10)
+
+      const doneYesterday = allTasks
+        .filter((t) => t.status === 'done' && t.resolved_at === yesterday)
+        .slice(0, 20)
+
+      const doneLines = doneYesterday
+        .map((t) => `- ${t.title} (${t.file?.split('/').pop()?.replace('.md', '') || 'unknown'})`)
+        .join('\n')
+
+      const prompt = `Write concise daily updates using ONLY tasks completed yesterday.
+
+Completed yesterday (${yesterday}):
+${doneLines || '- none'}
+
+Rules:
+- Use only the completed-yesterday list above.
+- Do not include open tasks, stale projects, or pending follow-ups.
+- Output exactly 1-6 bullets.
+- If none were completed, output one bullet: "No completed tasks yesterday."`
+
+      const raw = await callLLM(
+        [{ role: 'user', content: prompt }],
+        'You generate crisp daily updates from completed tasks only.',
+        settings
+      )
+
+      const result = { text: raw.trim(), generated_at: new Date().toISOString() }
+      await writeFile(DAILY_UPDATES_PATH, JSON.stringify(result, null, 2))
+      setDailyUpdates(result)
+    } catch (err) {
+      console.error('Daily updates generation failed:', err)
+    } finally {
+      setUpdatesLoading(false)
+    }
+  }
+
   const handleResolveTask = async (taskId) => {
     const { resolveTaskEntry } = await import('../lib/tasksIndex')
     await resolveTaskEntry(readFile, writeFile, taskId)
@@ -252,10 +307,14 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
         activityData={activityData}
         needsCall={needsCall}
         weekSummary={weekSummary}
+        dailyUpdates={dailyUpdates}
         summaryLoading={summaryLoading}
+        updatesLoading={updatesLoading}
         hasApiKey={!!settings?.apiKey}
         onGenerateSummary={handleGenerateSummary}
+        onGenerateUpdates={handleGenerateUpdates}
         onNavigate={setPage}
+        sectionConfig={settings?.dashboardSections || {}}
       />
       <DashboardSections
         projects={projects}
@@ -265,6 +324,8 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
         onResolveTask={handleResolveTask}
         onOrderChange={handleOrderChange}
         onNavigate={setPage}
+        enabledModules={settings?.enabledModules || { projects: true, people: true, ideas: true }}
+        sectionConfig={settings?.dashboardSections || {}}
       />
     </div>
   )

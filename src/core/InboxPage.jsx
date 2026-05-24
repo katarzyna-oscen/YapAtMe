@@ -363,6 +363,11 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
   }, [readFile, filePath])
 
   useEffect(() => {
+    // Warm file index in the background so Process click does not pay cold-scan cost.
+    getFileIndex(listTree, buildAllowedFiles).catch(() => {})
+  }, [listTree, filePath])
+
+  useEffect(() => {
     onBusyChange?.(saving || status === 'loading')
     return () => onBusyChange?.(false)
   }, [saving, status, onBusyChange])
@@ -406,7 +411,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
     queueSave(editorBody, val)
   }
 
-  const { isListening, isSupported, start, stop, transcript, reset } = useVoiceDictation()
+  const { isListening, isSupported, start, stop, transcript, interimTranscript, reset } = useVoiceDictation()
 
   // Append only the new portion of the transcript since last update
   const prevTranscript = useRef('')
@@ -468,7 +473,19 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
   }
 
   const handleApprove = async (change) => {
+    let existedBefore = true
+    try {
+      await readFile(change.target_file)
+    } catch {
+      existedBefore = false
+    }
+
     await applyChange(readFile, writeFile, change)
+
+    // Re-index only when approval created a previously-missing file.
+    if (!existedBefore) {
+      await invalidateFileIndex()
+    }
   }
 
   const handleDismiss = () => {}
@@ -510,7 +527,6 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
         await mergeTagsIntoIndex(readFile, writeFile, detectedTags)
         setTagSuggestions((prev) => [...new Set([...prev, ...detectedTags])].sort((a, b) => a.localeCompare(b)))
 
-        await invalidateFileIndex()
         await onProcessedNote?.(notesPath)
         setPage?.('viewer', notesPath)
       } catch (err) {
@@ -727,7 +743,12 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
             }}
           />
           <div key={filePath} className="milkdown-wrapper">
-            <EditorComponent initialValue={editorBody} onChange={handleChange} tagSuggestions={tagSuggestions} />
+            <EditorComponent
+              initialValue={editorBody}
+              onChange={handleChange}
+              tagSuggestions={tagSuggestions}
+              interimPreview={isListening ? interimTranscript : ''}
+            />
           </div>
         </div>
       </div>

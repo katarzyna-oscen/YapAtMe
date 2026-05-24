@@ -110,46 +110,88 @@ function StatChip({ label, value, tone }) {
   )
 }
 
-function ActivityHeatmap({ cells }) {
-  const max = Math.max(...cells.map(c => c.count), 1)
-  const weeks = []
-  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7))
+function ActivityHeatmap({ cells = [] }) {
+  if (!cells.length) return null
+
+  const max    = Math.max(...cells.map(c => c.count), 1)
   const total  = cells.reduce((s, c) => s + c.count, 0)
-  const streak = (() => {
-    let s = 0
-    for (let i = cells.length - 1; i >= 0; i--) {
-      if (cells[i].count > 0) s++; else break
-    }
-    return s
-  })()
+  const today  = cells[cells.length - 1]?.count ?? 0
+
+  // Streak = consecutive days with activity counting back from today
+  let streak = 0
+  for (let i = cells.length - 1; i >= 0; i--) {
+    if (cells[i].count > 0) streak++
+    else break
+  }
+
   const colorFor = (n) => {
     if (n === 0) return 'var(--panel-2)'
     const t = n / max
     return `oklch(${0.34 + t * 0.40} ${0.05 + t * 0.10} 240)`
   }
-  const CELL = 8, GAP = 2
+
+  // Split flat 84-cell array into 12 columns of 7 days
+  const weeks = []
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7))
+
+  const CELL = 8
+  const GAP  = 2
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-      <div style={{ fontSize: 12, letterSpacing: '0.04em', color: 'var(--text-very-dim)', whiteSpace: 'nowrap' }}>
+      {/* Label */}
+      <div style={{
+        fontSize: 12,
+        letterSpacing: '0.04em',
+        color: 'var(--text-very-dim)',
+        whiteSpace: 'nowrap',
+      }}>
         ACTIVITY · 12 WEEKS
       </div>
+
+      {/* Stats column + grid */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, fontSize: 11.5, color: 'var(--text-dim)', whiteSpace: 'nowrap', paddingBottom: 2 }}>
-          <span><span style={{ color: 'var(--text)', fontWeight: 600 }}>{total}</span> touches</span>
-          <span><span style={{ color: 'var(--success, #4ade80)', fontWeight: 600 }}>{streak}</span>d streak</span>
-          <span><span style={{ color: 'var(--success, #4ade80)', fontWeight: 600 }}>{cells[cells.length - 1]?.count ?? 0}</span> today</span>
+        {/* Numeric summary */}
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 4,
+          fontSize: 11.5,
+          color: 'var(--text-dim)',
+          whiteSpace: 'nowrap',
+          paddingBottom: 2,
+        }}>
+          <span>
+            <span style={{ color: 'var(--text)', fontWeight: 600 }}>{total}</span> touches
+          </span>
+          <span>
+            <span style={{ color: 'var(--success)', fontWeight: 600 }}>{streak}</span>d streak
+          </span>
+          <span>
+            <span style={{ color: 'var(--success)', fontWeight: 600 }}>{today}</span> today
+          </span>
         </div>
+
+        {/* Heatmap grid — 12 columns × 7 rows */}
         <div style={{ display: 'flex', gap: GAP }}>
-          {weeks.map((w, wi) => (
+          {weeks.map((week, wi) => (
             <div key={wi} style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
               {Array.from({ length: 7 }).map((_, di) => {
-                const c = w[di]
+                const c = week[di]
                 if (!c) return <div key={di} style={{ width: CELL, height: CELL }} />
                 return (
                   <div
                     key={di}
-                    title={`${c.date.toLocaleDateString()} · ${c.count} touches`}
-                    style={{ width: CELL, height: CELL, borderRadius: 2, background: colorFor(c.count) }}
+                    title={`${c.date instanceof Date
+                      ? c.date.toLocaleDateString()
+                      : c.date} · ${c.count} touches`}
+                    style={{
+                      width: CELL,
+                      height: CELL,
+                      borderRadius: 2,
+                      background: colorFor(c.count),
+                    }}
                   />
                 )
               })}
@@ -162,25 +204,53 @@ function ActivityHeatmap({ cells }) {
 }
 
 function TopBar({ stats, activityData }) {
-  const date = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  const date = new Date().toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric',
+  }).toUpperCase()
+
   return (
     <div style={{
-      display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-      padding: '32px 48px 28px', borderBottom: '1px solid var(--border-subtle)', gap: 24,
+      display: 'flex',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      padding: '32px 48px 28px',
+      borderBottom: '1px solid var(--border-subtle)',
+      gap: 24,
+      flexShrink: 0,
     }}>
+      {/* Left — date, title, stats */}
       <div>
-        <div style={{ fontSize: 12, color: 'var(--text-very-dim)', letterSpacing: '0.04em', marginBottom: 6 }}>
-          {date.toUpperCase()}
+        <div style={{
+          fontSize: 12,
+          color: 'var(--text-very-dim)',
+          letterSpacing: '0.04em',
+          marginBottom: 6,
+        }}>
+          {date}
         </div>
-        <h1 style={{ fontSize: 30, fontWeight: 600, letterSpacing: '-0.02em', margin: 0, color: 'var(--text)' }}>
+        <h1 style={{
+          fontSize: 30,
+          fontWeight: 600,
+          letterSpacing: '-0.02em',
+          margin: 0,
+          color: 'var(--text)',
+        }}>
           Command center
         </h1>
-        <div style={{ marginTop: 10, display: 'flex', gap: 18, fontSize: 12.5, color: 'var(--text-dim)' }}>
+        <div style={{
+          marginTop: 10,
+          display: 'flex',
+          gap: 18,
+          fontSize: 12.5,
+          color: 'var(--text-dim)',
+        }}>
           <StatChip label="projects" value={stats.projects} />
           <StatChip label="stale" value={stats.stale} tone={stats.stale > 0 ? 'warn' : null} />
           <StatChip label="open tasks" value={stats.actions} />
         </div>
       </div>
+
+      {/* Right — activity heatmap */}
       <ActivityHeatmap cells={activityData} />
     </div>
   )
@@ -188,102 +258,281 @@ function TopBar({ stats, activityData }) {
 
 // ─── Needs Your Call ──────────────────────────────────────────────────────────
 
-function kindIcon(kind) {
-  if (kind === 'project') return 'project'
-  if (kind === 'person')  return 'person'
-  if (kind === 'task')    return 'task'
-  return 'idea'
+function TaskAgeChip({ date }) {
+  const when = date instanceof Date ? date : new Date(date)
+  const days = Math.max(0, Math.floor((Date.now() - when.getTime()) / 86_400_000))
+  let hue = 150
+  let label = 'fresh'
+  if (days >= 45) { hue = 8; label = 'rotting' }
+  else if (days >= 21) { hue = 22; label = 'stale' }
+  else if (days >= 7) { hue = 80; label = 'aging' }
+  return (
+    <span
+      title={`${days}d old`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '2px 8px', borderRadius: 999,
+        background: `oklch(0.82 0.13 ${hue} / 0.12)`,
+        color: `oklch(0.84 0.13 ${hue})`,
+        border: `1px solid oklch(0.82 0.13 ${hue} / 0.28)`,
+        fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0,
+      }}
+    >
+      <span style={{ width: 5, height: 5, borderRadius: '50%', background: `oklch(0.78 0.16 ${hue})` }} />
+      {label}
+    </span>
+  )
 }
 
-function NeedsCallRowItem({ item, isLast, onNavigate }) {
-  const kindLabel = item.kind.charAt(0).toUpperCase() + item.kind.slice(1)
+function NeedsCallTypeDot({ kind, file }) {
+  let color = 'var(--text-very-dim)'
+  const folder = file?.split('/')[0]
+  if (kind === 'project' || folder === 'projects') color = 'var(--success)'
+  else if (kind === 'person' || folder === 'people') color = 'var(--info)'
+  else if (kind === 'idea' || folder === 'ideas') color = 'var(--accent)'
+  return <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+}
+
+function NeedsCallItemRow({ item, isLast, onResolve, onDismiss, dragHandlers, isDragging, isOver }) {
+  const handleCheck = async (e) => {
+    e.stopPropagation()
+    if (item.kind === 'task') await onResolve(item.id)
+    else await onDismiss(item.id)
+  }
+
+  const sourceLabel = item.kind === 'task'
+    ? item.file?.split('/').pop()?.replace('.md', '') ?? ''
+    : ''
+
+  const dateForChip = new Date(Date.now() - item.age * 86_400_000)
+
   return (
     <div
-      onClick={() => item.file && onNavigate('viewer', item.file)}
+      {...(dragHandlers || {})}
       style={{
-        display: 'flex', alignItems: 'center', gap: 14,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
         padding: '12px 16px',
-        borderBottom: isLast ? 'none' : '1px solid var(--border-subtle)',
-        cursor: item.file ? 'pointer' : 'default',
+        borderTop: isLast === false ? '1px solid var(--border-subtle)' : 'none',
+        background: isOver ? 'oklch(0.78 0.14 25 / 0.10)' : 'transparent',
+        opacity: isDragging ? 0.4 : 1,
+        cursor: dragHandlers ? 'grab' : 'default',
+        transition: 'background .12s, opacity .15s',
       }}
-      onMouseEnter={e => e.currentTarget.style.background = 'var(--panel-2)'}
-      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = 'var(--panel-2)'
+        const h = e.currentTarget.querySelector('[data-drag-handle]')
+        if (h) h.style.opacity = '1'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = isOver ? 'oklch(0.78 0.14 25 / 0.10)' : 'transparent'
+        const h = e.currentTarget.querySelector('[data-drag-handle]')
+        if (h) h.style.opacity = '0.3'
+      }}
     >
-      <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', boxShadow: '0 0 0 3px oklch(0.80 0.13 80 / 0.18)', flex: '0 0 6px' }} />
-      <span style={{ color: 'var(--text-very-dim)', display: 'inline-flex' }}>
-        <Icon name={kindIcon(item.kind)} size={14} />
+      <span
+        data-drag-handle
+        style={{
+          color: 'var(--text-very-dim)',
+          display: 'inline-flex',
+          opacity: 0.3,
+          transition: 'opacity .12s',
+          flexShrink: 0,
+        }}
+      >
+        <svg viewBox="0 0 14 14" width="14" height="14" fill="currentColor">
+          <circle cx="4.5" cy="4"  r="1.1" /><circle cx="4.5" cy="7"  r="1.1" /><circle cx="4.5" cy="10" r="1.1" />
+          <circle cx="9.5" cy="4"  r="1.1" /><circle cx="9.5" cy="7"  r="1.1" /><circle cx="9.5" cy="10" r="1.1" />
+        </svg>
       </span>
-      <span style={{ fontSize: 11, color: 'var(--text-very-dim)', textTransform: 'uppercase', letterSpacing: '0.1em', width: 60, flex: '0 0 60px' }}>
-        {kindLabel}
+
+      <button
+        onClick={handleCheck}
+        style={{
+          width: 18, height: 18, flexShrink: 0,
+          border: '1.5px solid var(--border-strong)',
+          borderRadius: 5,
+          background: 'transparent',
+          cursor: 'pointer', padding: 0,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          color: 'var(--bg)',
+        }}
+      />
+
+      <span style={{ flex: 1, fontSize: 13.5, color: 'var(--text)', lineHeight: 1.4, minWidth: 0 }}>
+        {item.title}
       </span>
-      <span style={{ flex: 1, fontSize: 13.5, color: 'var(--text)' }}>{item.title}</span>
-      <span style={{ fontSize: 12.5, color: 'var(--text-dim)' }}>{item.reason}</span>
-      <AgeChip days={item.age} />
+
+      {sourceLabel && (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5,
+          fontSize: 12, color: 'var(--text-very-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+          <NeedsCallTypeDot kind={item.kind} file={item.file} />
+          {sourceLabel}
+        </span>
+      )}
+
+      {(() => {
+        const tag = item.tags?.find(t => ['urgent','important','priority'].includes(String(t).toLowerCase()))
+          ?? (item.reason?.split(' ')[0]?.toLowerCase())
+        if (!tag) return null
+        return (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center',
+            padding: '2px 8px', borderRadius: 999, fontSize: 11, fontWeight: 600,
+            background: 'oklch(0.70 0.18 22 / 0.16)',
+            color: 'oklch(0.84 0.16 22)',
+            border: '1px solid oklch(0.70 0.18 22 / 0.40)',
+            whiteSpace: 'nowrap', flexShrink: 0,
+          }}>
+            {tag}
+          </span>
+        )
+      })()}
+
+      <TaskAgeChip date={dateForChip} />
     </div>
   )
 }
 
-function NeedsYourCall({ items, onNavigate }) {
-  if (items.length === 0) return null
+function NeedsCallSection({ needsCall, onResolveTask, onDismissNeedsCall, onNeedsCallOrderChange }) {
+  const items = needsCall || []
+  if (!items.length) return null
+
+  let dragId = null
+  let overId = null
+
+  const dragHandlersFor = (id) => ({
+    draggable: true,
+    onDragStart: (e) => {
+      dragId = id
+      e.dataTransfer.effectAllowed = 'move'
+      try { e.dataTransfer.setData('text/plain', id) } catch {}
+    },
+    onDragEnter: (e) => { e.preventDefault(); if (id !== dragId) overId = id },
+    onDragOver: (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' },
+    onDrop: (e) => {
+      e.preventDefault()
+      if (!dragId || dragId === id) { dragId = null; overId = null; return }
+      const from = items.findIndex((x) => x.id === dragId)
+      const to = items.findIndex((x) => x.id === id)
+      if (from >= 0 && to >= 0) {
+        const next = items.slice()
+        const [moved] = next.splice(from, 1)
+        next.splice(to, 0, moved)
+        onNeedsCallOrderChange?.(next)
+      }
+      dragId = null
+      overId = null
+    },
+    onDragEnd: () => { dragId = null; overId = null },
+  })
+
   return (
     <section style={{ padding: '28px 48px 8px' }}>
-      <SectionHeader
-        label="Needs Your Call"
-        right={<span style={{ fontSize: 11.5, color: 'var(--accent)' }}>{items.length} flagged</span>}
-      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, padding: '0 4px' }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'oklch(0.78 0.16 25)', flex: '0 0 6px' }} />
+        <h2 style={{ fontSize: 11, letterSpacing: '0.16em', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-dim)', margin: 0 }}>
+          Needs Your Call
+        </h2>
+        <span style={{ fontSize: 11, color: 'var(--text-very-dim)' }}>{items.length}</span>
+      </div>
+
       <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
-        {items.map((it, i) => (
-          <NeedsCallRowItem key={`${it.kind}-${it.id}`} item={it} isLast={i === items.length - 1} onNavigate={onNavigate} />
+        {items.map((item, i) => (
+          <NeedsCallItemRow
+            key={item.id}
+            item={item}
+            isLast={i === 0}
+            onResolve={onResolveTask}
+            onDismiss={onDismissNeedsCall}
+            dragHandlers={dragHandlersFor(item.id)}
+            isDragging={dragId === item.id}
+            isOver={overId === item.id}
+          />
         ))}
       </div>
     </section>
   )
 }
 
-// ─── Week Summary ─────────────────────────────────────────────────────────────
+// ─── Summary + Updates ───────────────────────────────────────────────────────
 
-function WeekSummary({ weekSummary, summaryLoading, hasApiKey, onGenerateSummary }) {
-  const ts = weekSummary?.generated_at
-    ? new Date(weekSummary.generated_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+function SummaryCard({ title, data, loading, canGenerate, onGenerate, placeholder }) {
+  const ts = data?.generated_at
+    ? new Date(data.generated_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null
-
   return (
-    <section style={{ padding: '28px 48px 0' }}>
-      <SectionHeader
-        label="Summary of the Week"
-        right={
-          <span style={{ fontSize: 11.5, color: 'var(--text-very-dim)' }}>
-            {ts ? `generated ${ts}` : 'not yet generated'}
-          </span>
-        }
-      />
-      <div style={{
-        padding: '18px 20px',
-        background: 'linear-gradient(180deg, oklch(0.72 0.13 240 / 0.06), transparent 70%), var(--panel)',
-        border: '1px solid var(--border)', borderRadius: 10,
-      }}>
-        {weekSummary?.text && (
-          <p style={{ margin: '0 0 14px', fontSize: 14, lineHeight: 1.6, color: 'var(--text)', textWrap: 'pretty' }}>
-            {weekSummary.text}
-          </p>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button
-            onClick={onGenerateSummary}
-            disabled={!hasApiKey || summaryLoading}
-            title={!hasApiKey ? 'Add API key in Settings' : undefined}
+    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: 12, minHeight: 180 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <h3
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              padding: '6px 14px', borderRadius: 7, fontSize: 12.5, fontWeight: 500,
-              background: 'var(--panel-2)', color: hasApiKey ? 'var(--text)' : 'var(--text-very-dim)',
-              border: '1px solid var(--border)', cursor: hasApiKey && !summaryLoading ? 'pointer' : 'not-allowed',
-              opacity: !hasApiKey ? 0.5 : 1,
+              fontSize: 15.5,
+              fontWeight: 600,
+              color: 'var(--text)',
+              margin: '0 24px 8px 0',
+              lineHeight: 1.3,
+              letterSpacing: '-0.005em',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
             }}
           >
-            {summaryLoading && <Icon name="spinner" size={13} />}
-            {weekSummary ? 'Regenerate' : 'Generate digest'}
+            {title}
+          </h3>
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={!canGenerate || loading}
+            style={{
+              border: '1px solid var(--border)',
+              background: 'var(--panel-2)',
+              color: !canGenerate || loading ? 'var(--text-very-dim)' : 'var(--text-dim)',
+              borderRadius: 6,
+              padding: '4px 8px',
+              fontSize: 11,
+              cursor: !canGenerate || loading ? 'default' : 'pointer',
+            }}
+          >
+            {loading ? 'Generating…' : 'Generate'}
           </button>
         </div>
+
+        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.6, flex: 1 }}>
+          {data?.text || placeholder}
+        </pre>
+
+        <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)' }}>
+          {`updated ${ts || '—'}`}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SummaryRow({ weekSummary, dailyUpdates, summaryLoading, updatesLoading, hasApiKey, onGenerateSummary, onGenerateUpdates }) {
+  return (
+    <section style={{ padding: '20px 48px 0' }}>
+      <SectionHeader label="Summaries" />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <SummaryCard
+          title="Summary of the Week"
+          data={weekSummary}
+          loading={summaryLoading}
+          canGenerate={hasApiKey}
+          onGenerate={onGenerateSummary}
+          placeholder="No summary yet."
+        />
+        <SummaryCard
+          title="Updates"
+          data={dailyUpdates}
+          loading={updatesLoading}
+          canGenerate={hasApiKey}
+          onGenerate={onGenerateUpdates}
+          placeholder="No updates yet."
+        />
       </div>
     </section>
   )
@@ -291,17 +540,59 @@ function WeekSummary({ weekSummary, summaryLoading, hasApiKey, onGenerateSummary
 
 // ─── Composed export ──────────────────────────────────────────────────────────
 
-export default function DashboardTop({ stats, activityData, needsCall, weekSummary, summaryLoading, hasApiKey, onGenerateSummary, onNavigate }) {
+export default function DashboardTop({
+  stats,
+  activityData,
+  needsCall,
+  weekSummary,
+  dailyUpdates,
+  summaryLoading,
+  updatesLoading,
+  hasApiKey,
+  onGenerateSummary,
+  onGenerateUpdates,
+  onResolveTask = async () => {},
+  onDismissNeedsCall = async (id) => { console.log('dismiss', id) },
+  onNeedsCallOrderChange = (items) => { console.log('reorder', items) },
+  sectionConfig,
+}) {
+  const isVisible = (id) => sectionConfig?.visibility?.[id] !== false
+  const defaultTopOrder = ['needs-call', 'summaries']
+  const topOrder = sectionConfig?.order?.length
+    ? sectionConfig.order.filter((id) => id === 'needs-call' || id === 'summaries')
+    : defaultTopOrder
+
+  const topSections = {
+    'needs-call': () => (
+      <NeedsCallSection
+        needsCall={needsCall}
+        onResolveTask={onResolveTask}
+        onDismissNeedsCall={onDismissNeedsCall}
+        onNeedsCallOrderChange={onNeedsCallOrderChange}
+      />
+    ),
+    summaries: () => (
+      <div style={{ paddingBottom: 8 }}>
+        <SummaryRow
+          weekSummary={weekSummary}
+          dailyUpdates={dailyUpdates}
+          summaryLoading={summaryLoading}
+          updatesLoading={updatesLoading}
+          hasApiKey={hasApiKey}
+          onGenerateSummary={onGenerateSummary}
+          onGenerateUpdates={onGenerateUpdates}
+        />
+      </div>
+    ),
+  }
+
   return (
     <>
       <TopBar stats={stats} activityData={activityData} />
-      <NeedsYourCall items={needsCall} onNavigate={onNavigate} />
-      <WeekSummary
-        weekSummary={weekSummary}
-        summaryLoading={summaryLoading}
-        hasApiKey={hasApiKey}
-        onGenerateSummary={onGenerateSummary}
-      />
+      {topOrder.map((id) => {
+        if (!isVisible(id) || !topSections[id]) return null
+        return <div key={id}>{topSections[id]()}</div>
+      })}
     </>
   )
 }

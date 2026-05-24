@@ -139,6 +139,131 @@ function hasMeaningfulNoteContent(noteContent) {
   return text.length > 0
 }
 
+function normalizeNestedWikilinks(text) {
+  let out = String(text || '')
+  for (let i = 0; i < 4; i += 1) {
+    const next = out
+      .replace(/\[\[\[\[\s*([^\]]+?)\s*\]\]\]\]/g, '[[$1]]')
+      .replace(/\[\[\[\s*([^\]]+?)\s*\]\]\]/g, '[[$1]]')
+      .replace(/\[{4,}\s*([^\]]+?)\s*\]{4,}/g, '[[$1]]')
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+
+function extractPromptTerms(text) {
+  const source = String(text || '')
+  const terms = new Set()
+
+  const wikiMatches = source.match(/\[\[[^\]]+\]\]/g) || []
+  for (const m of wikiMatches) {
+    const inner = m.replace(/^\[\[/, '').replace(/\]\]$/, '').trim().toLowerCase()
+    if (inner) terms.add(inner)
+  }
+
+  const simpleWords = source
+    .toLowerCase()
+    .replace(/\[\[[^\]]+\]\]/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3)
+
+  for (const w of simpleWords.slice(0, 40)) terms.add(w)
+  return [...terms]
+}
+
+function selectPromptAllowList(noteContent, allowedFiles) {
+  const files = allowedFiles || []
+  if (files.length <= 40) return files
+
+  const terms = extractPromptTerms(noteContent)
+  const matched = []
+  for (const path of files) {
+    const base = String(path || '').toLowerCase().replace(/\.md$/i, '')
+    if (terms.some((term) => base.includes(term))) {
+      matched.push(path)
+      if (matched.length >= 40) break
+    }
+  }
+
+  if (matched.length >= 10) return matched
+
+  const folderPriority = ['people/', 'projects/', 'ideas/', 'notes/']
+  const padded = [...matched]
+  for (const prefix of folderPriority) {
+    for (const path of files) {
+      if (padded.length >= 40) break
+      if (!String(path).toLowerCase().startsWith(prefix)) continue
+      if (!padded.includes(path)) padded.push(path)
+    }
+    if (padded.length >= 40) break
+  }
+
+  return padded.length > 0 ? padded : files.slice(0, 40)
+}
+
+function guessPersonName(noteContent) {
+  const wiki = String(noteContent || '').match(/\[\[([^\]]+)\]\]/)
+  if (wiki?.[1]) return wiki[1].trim()
+
+  const byWith = String(noteContent || '').match(/\b(?:with|to)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b/)
+  if (byWith?.[1]) return byWith[1].trim()
+  return ''
+}
+
+function findPeoplePathByName(name, allowedFiles) {
+  if (!name) return null
+  const needle = String(name).trim().toLowerCase()
+  const peopleFiles = (allowedFiles || []).filter((path) => String(path).toLowerCase().startsWith('people/'))
+  for (const path of peopleFiles) {
+    const base = String(path).split('/').pop()?.replace(/\.md$/i, '').toLowerCase() || ''
+    if (!base) continue
+    if (base === needle || base.includes(needle) || needle.includes(base)) return path
+  }
+  return null
+}
+
+function tryFastRouteShortNote(noteContent, noteFilename, allowedFiles = []) {
+  const normalized = normalizeNestedWikilinks(String(noteContent || '').trim())
+  if (!normalized) return null
+
+  const compact = normalized.replace(/\s+/g, ' ').trim()
+  if (compact.length > 190) return null
+
+  const lower = compact.toLowerCase()
+  const discussIntent = /\b(discuss|talk\s+to|talk\s+about|call\s+with|check\s+in|follow\s*up|touch\s+base|ping)\b/.test(lower)
+  const delegateIntent = /\b(delegate|ask\s+[^.]+\s+to|needs?\s+to|assign\s+to)\b/.test(lower)
+  if (!discussIntent && !delegateIntent) return null
+
+  const guessedName = guessPersonName(compact)
+  if (!guessedName) return null
+
+  const targetPath = findPeoplePathByName(guessedName, allowedFiles)
+  const isUrgent = /\b(urgent|asap|immediately|critical|blocker)\b/.test(lower)
+  const isImportant = /\b(important|priority|high-priority|high priority)\b/.test(lower)
+  const marker = delegateIntent && !discussIntent ? 'delegate' : (isUrgent ? 'urgent' : (isImportant ? 'important' : 'follow-up'))
+  const section = delegateIntent && !discussIntent ? '## Delegate' : '## Talk About'
+  const title = normalizeNestedWikilinks(compact)
+  const tagSuffix = isUrgent ? ' #urgent' : (isImportant ? ' #important' : '')
+
+  return {
+    annotated_note: normalizeNestedWikilinks(noteContent),
+    changes: targetPath ? [{
+      id: crypto.randomUUID?.() || `${Date.now()}-fast`,
+      target_file: targetPath,
+      target_section: section,
+      content: `- [ ] ${title}${tagSuffix}`,
+      marker,
+      title,
+      module: 'people',
+    }] : [],
+    unknown_entities: targetPath ? [] : [{ type: 'person', name: guessedName }],
+    _fastPath: true,
+    _note: noteFilename,
+  }
+}
+
 function safeParseJSON(raw) {
   const text = String(raw || '').trim()
   if (!text) throw new Error('LLM returned empty response')
@@ -527,11 +652,11 @@ export function useNoteProcessor() {
       const scopedAllowedFiles = (allowedFiles || []).filter((path) => enabledFolders.includes(String(path || '').split('/')[0]))
 
       const linkableFolders = enabledFolders.filter((folder) => folder === 'people' || folder === 'projects')
-      const linkedNoteContent = autoLinkKnownMentions(noteContent, scopedAllowedFiles, linkableFolders)
+      const linkedNoteContent = normalizeNestedWikilinks(autoLinkKnownMentions(noteContent, scopedAllowedFiles, linkableFolders))
 
       if (!hasMeaningfulNoteContent(linkedNoteContent)) {
         const emptyResult = {
-          annotated_note: linkedNoteContent,
+          annotated_note: normalizeNestedWikilinks(linkedNoteContent),
           changes: [],
           unknown_entities: [],
         }
@@ -540,10 +665,20 @@ export function useNoteProcessor() {
         return emptyResult
       }
 
+      const fastResult = tryFastRouteShortNote(linkedNoteContent, noteFilename, scopedAllowedFiles)
+      if (fastResult) {
+        setResult(fastResult)
+        setStatus('success')
+        return fastResult
+      }
+
+      const promptAllowFiles = selectPromptAllowList(linkedNoteContent, scopedAllowedFiles)
+
       const raw = await callLLM(
         [{ role: 'user', content: buildUserPrompt({ noteContent: linkedNoteContent, noteFilename }) }],
-        buildSystemPrompt(scopedAllowedFiles, enabledModules),
-        settings
+        buildSystemPrompt(promptAllowFiles, enabledModules),
+        settings,
+        900
       )
 
       const parsed = safeParseJSON(raw)
@@ -551,9 +686,9 @@ export function useNoteProcessor() {
         id: change.id || crypto.randomUUID?.() || `${Date.now()}-${index}`,
         target_file: change.target_file,
         target_section: change.target_section,
-        content: change.content,
+        content: normalizeNestedWikilinks(change.content),
         marker: change.marker || 'mention',
-        title: change.title || change.content?.replace(/^- \[[ x]\]\s*/, '') || 'Untitled',
+        title: normalizeNestedWikilinks(change.title || change.content?.replace(/^- \[[ x]\]\s*/, '') || 'Untitled'),
         module: change.module || (change.target_file?.split('/')[0] || 'other'),
       }))
 
@@ -596,7 +731,7 @@ export function useNoteProcessor() {
         }
       })
 
-      const synthesizedPeopleChanges = synthesizePeopleDelegates(noteContent, scopedAllowedFiles, hydratedChanges)
+      const synthesizedPeopleChanges = synthesizePeopleDelegates(linkedNoteContent, scopedAllowedFiles, hydratedChanges)
       if (synthesizedPeopleChanges.length > 0) {
         hydratedChanges = [...hydratedChanges, ...synthesizedPeopleChanges]
       }
@@ -604,7 +739,7 @@ export function useNoteProcessor() {
       // Synthesize task changes for unknown entities (files that don't exist yet).
       // This covers the first-run case where the LLM can't emit a change for a missing file.
       const unknownPeopleChanges = synthesizeUnknownPeopleChanges(
-        noteContent,
+        linkedNoteContent,
         parsed.unknown_entities || [],
         hydratedChanges
       )
@@ -648,7 +783,7 @@ export function useNoteProcessor() {
       })
 
       const hydrated = {
-        annotated_note: autoLinkKnownMentions(parsed.annotated_note || linkedNoteContent, scopedAllowedFiles, linkableFolders),
+        annotated_note: normalizeNestedWikilinks(autoLinkKnownMentions(parsed.annotated_note || linkedNoteContent, scopedAllowedFiles, linkableFolders)),
         changes: hydratedChanges,
         unknown_entities: filteredUnknown,
       }
