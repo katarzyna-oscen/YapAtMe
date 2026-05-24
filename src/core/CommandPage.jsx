@@ -313,6 +313,7 @@ Rules:
         hasApiKey={!!settings?.apiKey}
         onGenerateSummary={handleGenerateSummary}
         onGenerateUpdates={handleGenerateUpdates}
+        onResolveTask={handleResolveTask}
         onNavigate={setPage}
         sectionConfig={settings?.dashboardSections || {}}
       />
