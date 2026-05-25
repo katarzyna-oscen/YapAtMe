@@ -771,6 +771,11 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
             setCreateTarget(null)
             try {
               await invalidateFileIndex()
+              // Re-process the note now that the new entity exists
+              // This ensures note content gets routed to the newly created person/project/idea
+              setTimeout(() => {
+                handleProcess()
+              }, 100)
             } catch {}
           }}
           onCancel={() => setCreateTarget(null)}

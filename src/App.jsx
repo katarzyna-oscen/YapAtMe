@@ -276,7 +276,7 @@ export default function App() {
             listTree={listTree}
             settings={settings}
             saveSettings={saveSettings}
-            setPage={(page) => navigate(page)}
+            setPage={(page, file) => navigate(page, file)}
           />
         )}
         {activePage === 'tasks'    && (
