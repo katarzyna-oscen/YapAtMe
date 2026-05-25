@@ -329,6 +329,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
   // Modal state: null when closed, { id: string, label: string } when open
   const [pendingDisable, setPendingDisable] = useState(null)
   const [moduleRestoreNotice, setModuleRestoreNotice] = useState('')
+  const [activeSection, setActiveSection] = useState('ai')
 
   useEffect(() => {
     setForm({
@@ -448,6 +449,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
 
   return (
     <>
+      {/* Module disable modal — unchanged */}
       {pendingDisable && (
         <ModuleDisableModal
           moduleLabel={pendingDisable.label}
@@ -457,401 +459,445 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
         />
       )}
 
-      <div className="max-w-xl mx-auto p-8 space-y-8">
-      <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-        Settings
-      </h1>
+      <div style={{ display: 'flex', height: '100%', overflow: 'hidden' }}>
 
-      {/* AI Provider */}
-      <section className="space-y-4">
-        <h2
-          className="text-xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          AI Provider
-        </h2>
-
-        <div className="space-y-2">
-          <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
-            Provider
-          </label>
-          <select
-            value={form.provider}
-            onChange={e => updateAiField({ provider: e.target.value })}
-            className="w-full px-3 py-2 rounded text-sm"
-            style={inputStyle}
-          >
-            <option value="openrouter">OpenRouter</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-            <option value="ollama">Ollama (local)</option>
-          </select>
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
-            API Key
-          </label>
-          <input
-            type="password"
-            value={form.apiKey}
-            onChange={e => updateAiField({ apiKey: e.target.value })}
-            placeholder="sk-or-…"
-            className="w-full px-3 py-2 rounded text-sm font-mono"
-            style={inputStyle}
-          />
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
-            Model
-          </label>
-          <input
-            type="text"
-            value={form.model}
-            onChange={e => updateAiField({ model: e.target.value })}
-            placeholder="meta-llama/llama-3.3-70b-instruct"
-            className="w-full px-3 py-2 rounded text-sm font-mono"
-            style={inputStyle}
-          />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={handleSave}
-            className="px-4 py-2 rounded text-sm text-white transition-opacity hover:opacity-90"
-            style={{ background: 'var(--accent)' }}
-          >
-            {saved ? 'Saved ✓' : 'Save Settings'}
-          </button>
-          <button
-            onClick={handleTestConnection}
-            disabled={testingConnection}
-            className="px-4 py-2 rounded text-sm transition-colors"
-            style={{
-              border: '1px solid var(--border)',
-              color: testingConnection ? 'var(--text-muted)' : 'var(--text-secondary)',
-            }}
-          >
-            {testingConnection ? 'Testing…' : 'Test API Connection'}
-          </button>
-          {connectionStatus === 'ok' && (
-            <span className="text-xs" style={{ color: 'var(--success)' }}>
-              Connected: {connectionMessage}
-            </span>
-          )}
-          {connectionStatus === 'error' && (
-            <span className="text-xs" style={{ color: 'var(--danger)' }}>
-              Failed: {connectionMessage}
-            </span>
-          )}
-        </div>
-      </section>
-
-      {/* Vault */}
-      <section className="space-y-4">
-        <h2
-          className="text-xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Vault
-        </h2>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          If the app loses access to your vault folder after a page reload,
-          reload the page to reconnect.
-        </p>
-        <button
-          onClick={() => window.location.reload()}
-          className="px-4 py-2 rounded text-sm transition-colors"
-          style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
-        >
-          Reconnect Vault
-        </button>
-      </section>
-
-      <section className="space-y-4">
-        <h2
-          className="text-xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Working Memory
-        </h2>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Rebuilds <span className="font-mono">context/_context.md</span> from the current vault state.
-          Run this if the context looks stale or after making manual edits to vault files.
-        </p>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleRebuildContext}
-            disabled={rebuilding || !settings?.apiKey}
-            className="px-4 py-2 bg-[var(--panel-2)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40 transition-colors"
-          >
-            {rebuilding ? 'Rebuilding…' : 'Rebuild Context'}
-          </button>
-          {rebuildStatus === 'ok' && <span className="text-xs text-[var(--success)]">Context updated</span>}
-          {rebuildStatus === 'error' && <span className="text-xs text-[var(--danger)]">Failed - check API key</span>}
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <h2
-          className="text-xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Modules
-        </h2>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Disable modules to hide their sections and exclude them from note routing.
-          {' '}Disabling Projects or People will prompt you to migrate tasks first.
-        </p>
-
-        {moduleRestoreNotice && (
-          <div
-            style={{
-              padding: '9px 12px',
-              background: 'oklch(0.74 0.14 165 / 0.10)',
-              border: '1px solid oklch(0.74 0.14 165 / 0.30)',
-              borderRadius: 7,
-              fontSize: 12,
-              color: 'var(--text-dim)',
-              lineHeight: 1.5,
-            }}
-          >
-            ✓ {moduleRestoreNotice}
+        {/* ── Left nav ───────────────────────────────────────────────── */}
+        <nav style={{
+          width: 200,
+          flexShrink: 0,
+          padding: '32px 0 32px',
+          borderRight: '1px solid var(--border-subtle)',
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
+        }}>
+          <div style={{ padding: '0 20px 16px', fontSize: 11, fontWeight: 600,
+            letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-very-dim)' }}>
+            Settings
           </div>
-        )}
-
-        <div className="space-y-2">
           {[
-            { id: 'projects', label: 'Projects' },
-            { id: 'people', label: 'People' },
-            { id: 'ideas', label: 'Ideas' },
-          ].map((moduleDef) => {
-            const enabled = form.enabledModules?.[moduleDef.id] !== false
+            { id: 'ai',          label: 'AI Setup' },
+            { id: 'vault',       label: 'Vault Maintenance' },
+            { id: 'modules',     label: 'Modules' },
+            { id: 'dashboard',   label: 'Dashboard' },
+          ].map(({ id, label }) => {
+            const active = activeSection === id
             return (
-              <label
-                key={moduleDef.id}
-                className="flex items-center justify-between px-3 py-2 rounded border border-[var(--border)] bg-[var(--bg-input)] cursor-pointer"
+              <button
+                key={id}
+                onClick={() => setActiveSection(id)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 20px',
+                  background: active ? 'var(--panel-2)' : 'transparent',
+                  color: active ? 'var(--text)' : 'var(--text-dim)',
+                  border: 'none',
+                  borderRadius: 0,
+                  fontSize: 13,
+                  fontWeight: active ? 500 : 400,
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  textAlign: 'left',
+                  width: '100%',
+                  transition: 'background .12s, color .12s',
+                  position: 'relative',
+                }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--panel)' }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                    {moduleDef.label}
-                  </span>
-                  {MODULES_WITH_TASKS.has(moduleDef.id) && !enabled && (
-                    <span style={{ fontSize: 11, color: 'var(--text-very-dim)' }}>
-                      tasks hidden
-                    </span>
-                  )}
-                </div>
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={() => {
-                    void handleModuleToggle(moduleDef.id, moduleDef.label, enabled)
-                  }}
-                  className="h-4 w-4 accent-[var(--accent)]"
-                />
-              </label>
+                {/* Active indicator bar */}
+                {active && (
+                  <span style={{
+                    position: 'absolute', left: 0, top: '20%', bottom: '20%',
+                    width: 2, borderRadius: 1,
+                    background: 'var(--accent)',
+                  }} />
+                )}
+                {label}
+              </button>
             )
           })}
-        </div>
-      </section>
+        </nav>
 
-      {/* ── Dashboard ──────────────────────────────────────────────────── */}
-      <section className="space-y-4">
-        <h2
-          className="text-xs font-semibold uppercase tracking-wider"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Dashboard
-        </h2>
-        <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-          Choose which sections appear on your dashboard and in what order.
-          Needs Your Call and Summary are always shown.
-        </p>
-        <DashboardSectionConfig
-          value={form.dashboardSections}
-          onChange={(next) => {
-            const nextForm = { ...form, dashboardSections: next }
-            setForm(nextForm)
-            saveSettings(nextForm)
-          }}
-        />
-      </section>
+        {/* ── Content area ───────────────────────────────────────────── */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '32px 48px 64px' }}>
 
-      <section style={{ marginTop: 32 }}>
-        <h2
-          style={{
-            fontSize: 11,
-            fontWeight: 600,
-            letterSpacing: '0.1em',
-            textTransform: 'uppercase',
-            color: 'var(--text-very-dim)',
-            margin: '0 0 12px',
-          }}
-        >
-          Vault maintenance
-        </h2>
+          {/* ── AI Setup ─────────────────────────────────────────────── */}
+          {activeSection === 'ai' && (
+            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+                AI Setup
+              </h1>
 
-        <div
-          style={{
-            padding: '16px 18px',
-            background: 'var(--panel)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            marginBottom: 12,
-          }}
-        >
-          <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>
-            Migrate entity tasks to index
-          </div>
-          <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 14, lineHeight: 1.5 }}>
-            Moves task checkboxes from project and people files into the central task index.
-            Safe to run multiple times - existing tasks are not duplicated.
-          </div>
+              <div className="space-y-2">
+                <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
+                  Provider
+                </label>
+                <select
+                  value={form.provider}
+                  onChange={e => updateAiField({ provider: e.target.value })}
+                  className="w-full px-3 py-2 rounded text-sm"
+                  style={inputStyle}
+                >
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="ollama">Ollama (local)</option>
+                </select>
+              </div>
 
-          {migrateResult && (
-            <div
-              style={{
-                padding: '10px 14px',
-                marginBottom: 12,
-                background: 'oklch(0.74 0.14 165 / 0.10)',
-                border: '1px solid oklch(0.74 0.14 165 / 0.30)',
-                borderRadius: 6,
-                fontSize: 12.5,
-                color: 'var(--text-dim)',
-                lineHeight: 1.6,
-              }}
-            >
-              ✓ Done - {migrateResult.migrated} task{migrateResult.migrated !== 1 ? 's' : ''} migrated,
-              {' '}{migrateResult.skipped} already in index,
-              {' '}{migrateResult.filesUpdated} file{migrateResult.filesUpdated !== 1 ? 's' : ''} updated,
-              {' '}index: {migrateResult.indexCountBefore ?? 0}{' -> '}{migrateResult.indexCountAfter ?? 0}
+              <div className="space-y-2">
+                <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
+                  API Key
+                </label>
+                <input
+                  type="password"
+                  value={form.apiKey}
+                  onChange={e => updateAiField({ apiKey: e.target.value })}
+                  placeholder="sk-or-…"
+                  className="w-full px-3 py-2 rounded text-sm font-mono"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
+                  Model
+                </label>
+                <input
+                  type="text"
+                  value={form.model}
+                  onChange={e => updateAiField({ model: e.target.value })}
+                  placeholder="meta-llama/llama-3.3-70b-instruct"
+                  className="w-full px-3 py-2 rounded text-sm font-mono"
+                  style={inputStyle}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={handleSave}
+                  className="px-4 py-2 rounded text-sm text-white transition-opacity hover:opacity-90"
+                  style={{ background: 'var(--accent)' }}
+                >
+                  {saved ? 'Saved ✓' : 'Save Settings'}
+                </button>
+                <button
+                  onClick={handleTestConnection}
+                  disabled={testingConnection}
+                  className="px-4 py-2 rounded text-sm transition-colors"
+                  style={{
+                    border: '1px solid var(--border)',
+                    color: testingConnection ? 'var(--text-muted)' : 'var(--text-secondary)',
+                  }}
+                >
+                  {testingConnection ? 'Testing…' : 'Test API Connection'}
+                </button>
+                {connectionStatus === 'ok' && (
+                  <span className="text-xs" style={{ color: 'var(--success)' }}>
+                    Connected: {connectionMessage}
+                  </span>
+                )}
+                {connectionStatus === 'error' && (
+                  <span className="text-xs" style={{ color: 'var(--danger)' }}>
+                    Failed: {connectionMessage}
+                  </span>
+                )}
+              </div>
             </div>
           )}
 
-          <button
-            onClick={async () => {
-              if (migrating) return
-              setMigrating(true)
-              setMigrateResult(null)
-              try {
-                const result = await migrateEntityTasks({ readFile, writeFile, listTree })
-                setMigrateResult(result)
-              } catch (err) {
-                console.error('Migration failed:', err.message)
-              } finally {
-                setMigrating(false)
-              }
-            }}
-            disabled={migrating}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 16px',
-              background: 'var(--panel-2)',
-              color: migrating ? 'var(--text-very-dim)' : 'var(--text-dim)',
-              border: '1px solid var(--border)',
-              borderRadius: 7,
-              fontSize: 13,
-              cursor: migrating ? 'default' : 'pointer',
-              fontFamily: 'inherit',
-              transition: 'background .12s, color .12s',
-            }}
-            onMouseEnter={(e) => {
-              if (!migrating) {
-                e.currentTarget.style.background = 'var(--panel-pop)'
-                e.currentTarget.style.color = 'var(--text)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'var(--panel-2)'
-              e.currentTarget.style.color = migrating ? 'var(--text-very-dim)' : 'var(--text-dim)'
-            }}
-          >
-            {migrating ? 'Migrating…' : 'Run migration'}
-          </button>
-        </div>
+          {/* ── Vault Maintenance ────────────────────────────────────── */}
+          {activeSection === 'vault' && (
+            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+                Vault Maintenance
+              </h1>
 
-        <div
-          style={{
-            padding: '16px 18px',
-            background: 'var(--panel)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-          }}
-        >
-          <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>
-            Clean entity files
-          </div>
-          <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 14, lineHeight: 1.5 }}>
-            Removes legacy task and other non-schema sections from project and people files while keeping approved sections intact.
-          </div>
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                If the app loses access to your vault folder after a page reload,
+                reload the page to reconnect.
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 rounded text-sm transition-colors"
+                style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+              >
+                Reconnect Vault
+              </button>
 
-          {cleanResult && (
-            <div
-              style={{
-                padding: '10px 14px',
-                marginBottom: 12,
-                background: 'oklch(0.74 0.14 165 / 0.10)',
-                border: '1px solid oklch(0.74 0.14 165 / 0.30)',
-                borderRadius: 6,
-                fontSize: 12.5,
-                color: 'var(--text-dim)',
-                lineHeight: 1.6,
-              }}
-            >
-              ✓ Done - {cleanResult.sectionsRemoved} section{cleanResult.sectionsRemoved !== 1 ? 's' : ''} removed,
-              {' '}{cleanResult.sectionsAdded} added,
-              {' '}{cleanResult.filesCleaned} file{cleanResult.filesCleaned !== 1 ? 's' : ''} updated
+              <hr style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: 0 }} />
+
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                Rebuilds <span className="font-mono">context/_context.md</span> from the current vault state.
+                Run this if the context looks stale or after making manual edits to vault files.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleRebuildContext}
+                  disabled={rebuilding || !settings?.apiKey}
+                  className="px-4 py-2 bg-[var(--panel-2)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40 transition-colors"
+                >
+                  {rebuilding ? 'Rebuilding…' : 'Rebuild Context'}
+                </button>
+                {rebuildStatus === 'ok' && <span className="text-xs text-[var(--success)]">Context updated</span>}
+                {rebuildStatus === 'error' && <span className="text-xs text-[var(--danger)]">Failed - check API key</span>}
+              </div>
+
+              <hr style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: 0 }} />
+
+              <div
+                style={{
+                  padding: '16px 18px',
+                  background: 'var(--panel)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>
+                  Migrate entity tasks to index
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 14, lineHeight: 1.5 }}>
+                  Moves task checkboxes from project and people files into the central task index.
+                  Safe to run multiple times - existing tasks are not duplicated.
+                </div>
+
+                {migrateResult && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      marginBottom: 12,
+                      background: 'oklch(0.74 0.14 165 / 0.10)',
+                      border: '1px solid oklch(0.74 0.14 165 / 0.30)',
+                      borderRadius: 6,
+                      fontSize: 12.5,
+                      color: 'var(--text-dim)',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    ✓ Done - {migrateResult.migrated} task{migrateResult.migrated !== 1 ? 's' : ''} migrated,
+                    {' '}{migrateResult.skipped} already in index,
+                    {' '}{migrateResult.filesUpdated} file{migrateResult.filesUpdated !== 1 ? 's' : ''} updated,
+                    {' '}index: {migrateResult.indexCountBefore ?? 0}{' -> '}{migrateResult.indexCountAfter ?? 0}
+                  </div>
+                )}
+
+                <button
+                  onClick={async () => {
+                    if (migrating) return
+                    setMigrating(true)
+                    setMigrateResult(null)
+                    try {
+                      const result = await migrateEntityTasks({ readFile, writeFile, listTree })
+                      setMigrateResult(result)
+                    } catch (err) {
+                      console.error('Migration failed:', err.message)
+                    } finally {
+                      setMigrating(false)
+                    }
+                  }}
+                  disabled={migrating}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 16px',
+                    background: 'var(--panel-2)',
+                    color: migrating ? 'var(--text-very-dim)' : 'var(--text-dim)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 7,
+                    fontSize: 13,
+                    cursor: migrating ? 'default' : 'pointer',
+                    fontFamily: 'inherit',
+                    transition: 'background .12s, color .12s',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!migrating) {
+                      e.currentTarget.style.background = 'var(--panel-pop)'
+                      e.currentTarget.style.color = 'var(--text)'
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'var(--panel-2)'
+                    e.currentTarget.style.color = migrating ? 'var(--text-very-dim)' : 'var(--text-dim)'
+                  }}
+                >
+                  {migrating ? 'Migrating…' : 'Run migration'}
+                </button>
+              </div>
+
+              <div
+                style={{
+                  padding: '16px 18px',
+                  background: 'var(--panel)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                }}
+              >
+                <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>
+                  Clean entity files
+                </div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 14, lineHeight: 1.5 }}>
+                  Removes legacy task and other non-schema sections from project and people files while keeping approved sections intact.
+                </div>
+
+                {cleanResult && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      marginBottom: 12,
+                      background: 'oklch(0.74 0.14 165 / 0.10)',
+                      border: '1px solid oklch(0.74 0.14 165 / 0.30)',
+                      borderRadius: 6,
+                      fontSize: 12.5,
+                      color: 'var(--text-dim)',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    ✓ Done - {cleanResult.sectionsRemoved} section{cleanResult.sectionsRemoved !== 1 ? 's' : ''} removed,
+                    {' '}{cleanResult.sectionsAdded} added,
+                    {' '}{cleanResult.filesCleaned} file{cleanResult.filesCleaned !== 1 ? 's' : ''} updated
+                  </div>
+                )}
+
+                <button
+                  onClick={async () => {
+                    if (cleaning) return
+                    setCleaning(true)
+                    setCleanResult(null)
+                    try {
+                      const result = await cleanEntityFiles({ readFile, writeFile, listTree })
+                      setCleanResult(result)
+                    } catch (err) {
+                      console.error('Entity cleanup failed:', err.message)
+                    } finally {
+                      setCleaning(false)
+                    }
+                  }}
+                  disabled={cleaning}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '8px 16px',
+                    background: 'var(--panel-2)',
+                    color: cleaning ? 'var(--text-very-dim)' : 'var(--text-dim)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 7,
+                    fontSize: 13,
+                    cursor: cleaning ? 'default' : 'pointer',
+                    fontFamily: 'inherit',
+                    transition: 'background .12s, color .12s',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!cleaning) {
+                      e.currentTarget.style.background = 'var(--panel-pop)'
+                      e.currentTarget.style.color = 'var(--text)'
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'var(--panel-2)'
+                    e.currentTarget.style.color = cleaning ? 'var(--text-very-dim)' : 'var(--text-dim)'
+                  }}
+                >
+                  {cleaning ? 'Cleaning…' : 'Clean entity files'}
+                </button>
+              </div>
             </div>
           )}
 
-          <button
-            onClick={async () => {
-              if (cleaning) return
-              setCleaning(true)
-              setCleanResult(null)
-              try {
-                const result = await cleanEntityFiles({ readFile, writeFile, listTree })
-                setCleanResult(result)
-              } catch (err) {
-                console.error('Entity cleanup failed:', err.message)
-              } finally {
-                setCleaning(false)
-              }
-            }}
-            disabled={cleaning}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 16px',
-              background: 'var(--panel-2)',
-              color: cleaning ? 'var(--text-very-dim)' : 'var(--text-dim)',
-              border: '1px solid var(--border)',
-              borderRadius: 7,
-              fontSize: 13,
-              cursor: cleaning ? 'default' : 'pointer',
-              fontFamily: 'inherit',
-              transition: 'background .12s, color .12s',
-            }}
-            onMouseEnter={(e) => {
-              if (!cleaning) {
-                e.currentTarget.style.background = 'var(--panel-pop)'
-                e.currentTarget.style.color = 'var(--text)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'var(--panel-2)'
-              e.currentTarget.style.color = cleaning ? 'var(--text-very-dim)' : 'var(--text-dim)'
-            }}
-          >
-            {cleaning ? 'Cleaning…' : 'Clean entity files'}
-          </button>
+          {/* ── Modules ──────────────────────────────────────────────── */}
+          {activeSection === 'modules' && (
+            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+                Modules
+              </h1>
+
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                Disable modules to hide their sections and exclude them from note routing.
+                {' '}Disabling Projects or People will prompt you to migrate tasks first.
+              </p>
+
+              {moduleRestoreNotice && (
+                <div
+                  style={{
+                    padding: '9px 12px',
+                    background: 'oklch(0.74 0.14 165 / 0.10)',
+                    border: '1px solid oklch(0.74 0.14 165 / 0.30)',
+                    borderRadius: 7,
+                    fontSize: 12,
+                    color: 'var(--text-dim)',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  ✓ {moduleRestoreNotice}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {[
+                  { id: 'projects', label: 'Projects' },
+                  { id: 'people', label: 'People' },
+                  { id: 'ideas', label: 'Ideas' },
+                ].map((moduleDef) => {
+                  const enabled = form.enabledModules?.[moduleDef.id] !== false
+                  return (
+                    <label
+                      key={moduleDef.id}
+                      className="flex items-center justify-between px-3 py-2 rounded border border-[var(--border)] bg-[var(--bg-input)] cursor-pointer"
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                          {moduleDef.label}
+                        </span>
+                        {MODULES_WITH_TASKS.has(moduleDef.id) && !enabled && (
+                          <span style={{ fontSize: 11, color: 'var(--text-very-dim)' }}>
+                            tasks hidden
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={() => {
+                          void handleModuleToggle(moduleDef.id, moduleDef.label, enabled)
+                        }}
+                        className="h-4 w-4 accent-[var(--accent)]"
+                      />
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── Dashboard ────────────────────────────────────────────── */}
+          {activeSection === 'dashboard' && (
+            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+                Dashboard
+              </h1>
+
+              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+                Choose which sections appear on your dashboard and in what order.
+                Needs Your Call and Summary are always shown.
+              </p>
+              <DashboardSectionConfig
+                value={form.dashboardSections}
+                onChange={(next) => {
+                  const nextForm = { ...form, dashboardSections: next }
+                  setForm(nextForm)
+                  saveSettings(nextForm)
+                }}
+              />
+            </div>
+          )}
+
         </div>
-      </section>
       </div>
     </>
   )

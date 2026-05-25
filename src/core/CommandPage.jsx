@@ -72,8 +72,11 @@ function buildActivityData(tasks, inboxFiles) {
   }
   for (const file of inboxFiles) {
     const date = file.name.replace('.md', '')
-    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      counts[date] = (counts[date] || 0) + 2
+    const ddmmyyyyMatch = date.match(/^(\d{2})-(\d{2})-(\d{4})$/)
+    if (ddmmyyyyMatch) {
+      const [, dd, mm, yyyy] = ddmmyyyyMatch
+      const isoDate = `${yyyy}-${mm}-${dd}`
+      counts[isoDate] = (counts[isoDate] || 0) + 2
     }
   }
   const cells = []
