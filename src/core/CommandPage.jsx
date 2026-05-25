@@ -256,24 +256,35 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
         .map((t) => `- ${t.title} (${t.file?.split('/').pop()?.replace('.md', '') || 'unknown'})`)
         .join('\n')
 
-      const prompt = `Write concise daily updates using ONLY tasks completed yesterday.
+      // Show source tasks as a reference comment
+      const sourceComment = doneYesterday.length > 0 
+        ? `[Source: ${doneYesterday.length} completed task(s) from ${yesterday}]`
+        : '[Source: No completed tasks]'
+
+      const prompt = `Generate a concise bullet-point summary of these completed tasks. DO NOT REPHRASE, COMBINE, OR ADD TASKS. Use the exact task titles provided.
 
 Completed yesterday (${yesterday}):
-${doneLines || '- none'}
+${doneLines || '(none)'}
 
-Rules:
-- Use only the completed-yesterday list above.
-- Do not include open tasks, stale projects, or pending follow-ups.
-- Output exactly 1-6 bullets.
-- If none were completed, output one bullet: "No completed tasks yesterday."`
+Instructions:
+- Output ONLY bullets matching the list above
+- Do NOT rephrase, reword, or summarize task titles
+- Do NOT combine multiple tasks into one bullet
+- Do NOT include tasks not in the list above
+- Output 1-6 bullets exactly
+- If no tasks, output: "No completed tasks yesterday."`
 
       const raw = await callLLM(
         [{ role: 'user', content: prompt }],
-        'You generate crisp daily updates from completed tasks only.',
+        'You generate updates by directly using completed task titles with no rephrasing.',
         settings
       )
 
-      const result = { text: raw.trim(), generated_at: new Date().toISOString() }
+      const result = { 
+        text: `${raw.trim()}\n\n${sourceComment}`, 
+        generated_at: new Date().toISOString(),
+        sourceCount: doneYesterday.length 
+      }
       await writeFile(DAILY_UPDATES_PATH, JSON.stringify(result, null, 2))
       setDailyUpdates(result)
     } catch (err) {
