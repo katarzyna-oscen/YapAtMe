@@ -261,14 +261,15 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
         ? `[Source: ${doneYesterday.length} completed task(s) from ${yesterday}]`
         : '[Source: No completed tasks]'
 
-      const prompt = `Generate a concise bullet-point summary of these completed tasks. DO NOT REPHRASE, COMBINE, OR ADD TASKS. Use the exact task titles provided.
+      const prompt = `Generate a concise bullet-point summary of these completed tasks. Convert all task titles to PAST TENSE. DO NOT REPHRASE, COMBINE, OR ADD TASKS. Use the exact task titles provided, but convert to past tense.
 
 Completed yesterday (${yesterday}):
 ${doneLines || '(none)'}
 
 Instructions:
 - Output ONLY bullets matching the list above
-- Do NOT rephrase, reword, or summarize task titles
+- Convert each task title to PAST TENSE (e.g., "Discuss X" → "Discussed X", "Review Y" → "Reviewed Y")
+- Do NOT rephrase or reword task titles beyond tense conversion
 - Do NOT combine multiple tasks into one bullet
 - Do NOT include tasks not in the list above
 - Output 1-6 bullets exactly
