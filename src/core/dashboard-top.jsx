@@ -504,8 +504,9 @@ function SummaryCard({ title, data, loading, canGenerate, onGenerate, placeholde
           {data?.text || placeholder}
         </pre>
 
-        <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)' }}>
-          {`updated ${ts || '—'}`}
+        <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>{`updated ${ts || '—'}`}</span>
+          {data?.sourceComment && <span>{data.sourceComment}</span>}
         </div>
       </div>
     </div>

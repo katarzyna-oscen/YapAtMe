@@ -282,7 +282,8 @@ Instructions:
       )
 
       const result = { 
-        text: `${raw.trim()}\n\n${sourceComment}`, 
+        text: raw.trim(),
+        sourceComment: sourceComment,
         generated_at: new Date().toISOString(),
         sourceCount: doneYesterday.length 
       }
