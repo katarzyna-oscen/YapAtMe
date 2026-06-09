@@ -3,6 +3,7 @@
 // a file must export only components OR only hooks, not both.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useEditor, Milkdown, MilkdownProvider } from '@milkdown/react'
 import { Editor, rootCtx, defaultValueCtx, editorViewOptionsCtx, prosePluginsCtx, editorViewCtx } from '@milkdown/kit/core'
 import { commonmark } from '@milkdown/kit/preset/commonmark'
@@ -82,6 +83,40 @@ const tokenDecorationPlugin = new Plugin({
   },
 })
 
+// Automatically applies link marks to bare URLs in the document after every
+// transaction. This handles both typed and pasted URLs without intercepting
+// events — the same approach used by Notion and Obsidian.
+const URL_RE = /https?:\/\/[^\s\])\[,"'<>]+/g
+const autoLinkPlugin = new Plugin({
+  appendTransaction(_transactions, _oldState, newState) {
+    const linkType = newState.schema.marks.link
+    if (!linkType) return null
+
+    const tr = newState.tr
+    let modified = false
+
+    newState.doc.descendants((node, pos) => {
+      if (!node.isText || !node.text) return
+      // Skip nodes that are already fully covered by a link mark
+      if (node.marks.some((m) => m.type === linkType)) return
+
+      let match
+      URL_RE.lastIndex = 0
+      while ((match = URL_RE.exec(node.text)) !== null) {
+        const from = pos + match.index
+        const to = from + match[0].length
+        // Check if this range already has a link mark
+        const $from = newState.doc.resolve(from)
+        if ($from.marks().some((m) => m.type === linkType)) continue
+        tr.addMark(from, to, linkType.create({ href: match[0], title: null }))
+        modified = true
+      }
+    })
+
+    return modified ? tr : null
+  },
+})
+
 function toggleTaskItem(view, nodePos) {
   const node = view.state.doc.nodeAt(nodePos)
   if (!node || typeof node.attrs?.checked !== 'boolean') return false
@@ -128,6 +163,11 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
   const applyWikilinkRef = useRef(() => {})
   const [tagMenu, setTagMenu] = useState({ open: false, query: '', x: 0, y: 0, index: 0 })
   const [wikilinkMenu, setWikilinkMenu] = useState({ open: false, query: '', x: 0, y: 0, index: 0 })
+
+  // Link insertion state
+  const [linkPopover, setLinkPopover] = useState({ open: false, text: '', url: '', x: 0, y: 0 })
+  const linkSavedSelectionRef = useRef(null) // { from, to, text }
+  const linkUrlInputRef = useRef(null)
 
   const normalizedTags = useMemo(() => {
     const seen = new Set()
@@ -273,6 +313,31 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
     applyWikilinkRef.current = applyWikilink
 
     const onKeyDown = (e) => {
+      // Cmd/Ctrl+K — insert link anchored near the selection
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        const instance = editor.get()
+        if (!instance) return
+        let selText = ''
+        let anchorX = window.innerWidth / 2
+        let anchorY = 200
+        instance.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          const { from, to } = view.state.selection
+          selText = from !== to ? view.state.doc.textBetween(from, to) : ''
+          linkSavedSelectionRef.current = { from, to, text: selText }
+          // Position below DOM selection
+          const sel = window.getSelection()
+          if (sel && sel.rangeCount > 0) {
+            const rect = sel.getRangeAt(0).getBoundingClientRect()
+            anchorX = Math.max(8, rect.left)
+            anchorY = rect.bottom + 8
+          }
+        })
+        setLinkPopover({ open: true, text: selText, url: '', x: anchorX, y: anchorY })
+        return
+      }
+
       if (wikilinkMenu.open && wikilinkMenuItems.length > 0) {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
@@ -329,7 +394,7 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
       .config((ctx) => {
         ctx.set(rootCtx, root)
         ctx.set(defaultValueCtx, initialValueRef.current)
-        ctx.update(prosePluginsCtx, (plugins) => [...plugins, tokenDecorationPlugin])
+        ctx.update(prosePluginsCtx, (plugins) => [autoLinkPlugin, tokenDecorationPlugin, ...plugins])
         ctx.set(editorViewOptionsCtx, {
           editable: () => true,
           attributes: {
@@ -341,6 +406,19 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
               const target = mouseEvent.target
               const isEditableTarget = target instanceof HTMLElement && !!target.closest('.ProseMirror')
               if (!isEditableTarget) return false
+
+              // External link — open in new tab
+              if (target instanceof HTMLElement) {
+                const anchor = target.closest('a[href]')
+                if (anchor) {
+                  const href = anchor.getAttribute('href')
+                  if (href && /^https?:\/\//.test(href)) {
+                    mouseEvent.preventDefault()
+                    window.open(href, '_blank', 'noopener,noreferrer')
+                    return true
+                  }
+                }
+              }
 
               const coords = { left: mouseEvent.clientX, top: mouseEvent.clientY }
               const pos = view.posAtCoords(coords)
@@ -355,7 +433,7 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
               if (typeof callback === 'function') {
                 mouseEvent.preventDefault()
                 mouseEvent.stopPropagation()
-                callback(found.name)
+                callback(found.name, { x: mouseEvent.clientX, y: mouseEvent.clientY })
                 return true
               }
 
@@ -431,6 +509,33 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
     lastMarkdownRef.current = nextValue
     instance.action(replaceAll(nextValue))
   }, [editor, initialValue])
+
+  const insertLink = (url) => {
+    const trimUrl = (url || '').trim()
+    setLinkPopover((prev) => ({ ...prev, open: false }))
+    if (!trimUrl) return
+    const saved = linkSavedSelectionRef.current
+    linkSavedSelectionRef.current = null
+    const instance = editor.get()
+    if (!instance) return
+    instance.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      const { state } = view
+      const from = saved?.from ?? state.selection.from
+      const to = saved?.to ?? state.selection.to
+      const selText = saved?.text || trimUrl
+      const linkMark = state.schema.marks.link?.create({ href: trimUrl, title: null })
+      if (linkMark) {
+        const tr = state.tr
+        if (from !== to) {
+          tr.addMark(from, to, linkMark)
+        } else {
+          tr.replaceSelectionWith(state.schema.text(selText, [linkMark]))
+        }
+        view.dispatch(tr)
+      }
+    })
+  }
 
   return (
     <>
@@ -539,6 +644,60 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
             </div>
           ))}
         </div>
+      )}
+      {/* Cmd+K link popover — anchored near selection */}
+      {linkPopover.open && createPortal(
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 498 }}
+            onClick={() => setLinkPopover((prev) => ({ ...prev, open: false }))}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: Math.min(linkPopover.x, window.innerWidth - 300),
+              top: Math.min(linkPopover.y, window.innerHeight - 100),
+              zIndex: 499,
+              width: 280,
+              padding: '10px 12px',
+              background: 'var(--panel-pop)',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              boxShadow: '0 12px 36px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.03)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {linkPopover.text && (
+              <div style={{ fontSize: 11.5, color: 'var(--text-very-dim)', marginBottom: 6, letterSpacing: '0.03em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                "{linkPopover.text}"
+              </div>
+            )}
+            <input
+              ref={linkUrlInputRef}
+              type="url"
+              value={linkPopover.url}
+              onChange={(e) => setLinkPopover((prev) => ({ ...prev, url: e.target.value }))}
+              placeholder="https://"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); insertLink(linkPopover.url) }
+                if (e.key === 'Escape') { setLinkPopover((prev) => ({ ...prev, open: false })) }
+              }}
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                padding: '7px 10px',
+                background: 'var(--panel-2)',
+                border: '1px solid var(--border)',
+                borderRadius: 7,
+                fontSize: 13,
+                color: 'var(--text)',
+                outline: 'none',
+                fontFamily: 'inherit',
+              }}
+            />
+          </div>
+        </>,
+        document.body
       )}
     </>
   )

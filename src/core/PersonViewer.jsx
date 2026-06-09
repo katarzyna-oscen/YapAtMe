@@ -175,6 +175,7 @@ export default function PersonViewer({
   onFileRenamed,
   onConfirmAction,
   onFileDeleted,
+  onDisplayNameChanged,
 }) {
   const [fullName, setFullName] = useState('')
   const [relationship, setRelationship] = useState('')
@@ -228,7 +229,8 @@ export default function PersonViewer({
       setRelationship(fields?.relationship || '')
       setRole(fields?.role || '')
       setLastUpdated(fields?.last_updated || '')
-      setEditorBody((body || '').trimStart())
+      const trimmedBody = (body || '').trimStart()
+      setEditorBody(trimmedBody)
     } catch {
       setFullName('')
       setRelationship('')
@@ -274,6 +276,7 @@ export default function PersonViewer({
 
     try {
       await writeFile(filePath, full)
+      onDisplayNameChanged?.(filePath, fullName.trim() || 'Untitled')
       const t = new Date().toLocaleTimeString('en-US', {
         hour: '2-digit',
         minute: '2-digit',
@@ -376,7 +379,9 @@ export default function PersonViewer({
         last_updated: today,
       }
       await writeFile(newPath, buildFileContent(fields, editorBody))
-      await deleteFile(oldPath)
+      if (oldPath.toLowerCase() !== newPath.toLowerCase()) {
+        await deleteFile(oldPath)
+      }
 
       // Update tasks-index and context/index files
       await retargetTasksForFile(readFile, writeFile, oldPath, newPath)
@@ -669,7 +674,7 @@ export default function PersonViewer({
 
           {/* Milkdown body — remounts when filePath changes */}
           <div key={filePath} className="milkdown-wrapper">
-            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} wikilinkSuggestions={wikilinkSuggestions ?? []} />
+            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={handleWikilinkClick} wikilinkSuggestions={wikilinkSuggestions ?? []} />
           </div>
         </div>
       </div>

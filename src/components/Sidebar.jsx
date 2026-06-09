@@ -397,6 +397,8 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
           files.map((file) => {
             const isActive = activePath === file.path
             const isContext = folder === 'context'
+              || file.path === 'archive/tasks-archive.md'
+              || file.path === 'archive/tasks_done.md'
             const isNew = newFilePaths?.has?.(file.path)
             return (
               <div
@@ -594,7 +596,7 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
           }}
           onClick={(event) => event.stopPropagation()}
         >
-          {folder !== 'inbox' && (
+          {folder !== 'inbox' && folder !== 'archive' && (
             <MenuItem
               label="Rename"
               onClick={() => {
@@ -604,10 +606,12 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
               }}
             />
           )}
-          <MenuItem
-            label="Archive"
-            onClick={() => handleArchive(selectedFile.path)}
-          />
+          {folder !== 'archive' && (
+            <MenuItem
+              label="Archive"
+              onClick={() => handleArchive(selectedFile.path)}
+            />
+          )}
           <MenuItem
             label="Delete"
             danger
@@ -726,6 +730,7 @@ export default function Sidebar({
   newFilePaths,
   onMarkFileSeen,
   onRenameFile,
+  entityDisplayNames = new Map(),
 }) {
   const { readFile: fallbackReadFile, writeFile: fallbackWriteFile } = useFileSystem()
   const enabledModules = settings?.enabledModules ?? { projects: true, people: true, ideas: true }
@@ -734,7 +739,8 @@ export default function Sidebar({
 
   const parseFilenameDateKey = (file) => {
     const rawName = String(file?.name || '').replace(/\.md$/i, '')
-    const match = rawName.match(/^(\d{2})-(\d{2})-(\d{4})$/)
+    // Match date prefix DD-MM-YYYY (optionally followed by more content)
+    const match = rawName.match(/^(\d{2})-(\d{2})-(\d{4})/)
     if (!match) return null
     return `${match[3]}-${match[2]}-${match[1]}`
   }
@@ -744,8 +750,7 @@ export default function Sidebar({
       .filter((file) =>
         !file.name.startsWith('.')
         && !file.name.startsWith('_moved')
-        && !(section === 'archive' && file.name === 'tasks.md')
-      )
+        && !(section === 'archive' && file.name === 'tasks.md')      )
       .sort((a, b) => {
         if (section === 'notes' || section === 'inbox') {
           const aDate = parseFilenameDateKey(a)
@@ -762,13 +767,23 @@ export default function Sidebar({
       })
       .map((file) => {
         const stem = file.name.replace(/\.md$/i, '')
-        // Humanize slug: hyphens → spaces, title-case each word
-        // But preserve dashes for date-format stems (DD-MM-YYYY)
+        const filePath = file.path || `${section}/${file.name}`
+        // Use user-authored name from frontmatter if available
+        if (entityDisplayNames.has(filePath)) {
+          return { name: entityDisplayNames.get(filePath), path: filePath }
+        }
+        // Pure date stem DD-MM-YYYY: preserve as-is
         const isDateStem = /^\d{2}-\d{2}-\d{4}$/.test(stem)
+        // Date-prefixed stem DD-MM-YYYY-rest: keep date dashes, humanize rest
+        const datePrefixMatch = /^(\d{2}-\d{2}-\d{4})(-.+)?$/.exec(stem)
         const label = isDateStem
           ? stem
-          : stem.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-        return { name: label, path: file.path || `${section}/${file.name}` }
+          : datePrefixMatch
+            ? datePrefixMatch[1] + (datePrefixMatch[2]
+                ? ' ' + datePrefixMatch[2].slice(1).replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+                : '')
+            : stem.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+        return { name: label, path: filePath }
       })
 
   return (

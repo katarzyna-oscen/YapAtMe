@@ -337,6 +337,20 @@ textarea::placeholder {
   color: #010619;
 }
 
+/* ── External links in editor ── */
+.milkdown-wrapper .milkdown .ProseMirror a[href] {
+  color: oklch(0.72 0.16 240);
+  text-decoration: underline;
+  text-decoration-color: oklch(0.72 0.16 240 / 0.45);
+  text-underline-offset: 0.13em;
+  cursor: pointer;
+}
+
+.milkdown-wrapper .milkdown .ProseMirror a[href]:hover {
+  color: oklch(0.82 0.16 240);
+  text-decoration-color: oklch(0.82 0.16 240 / 0.65);
+}
+
 .milkdown-wrapper .milkdown .ProseMirror blockquote {
   margin: 1rem 0;
   border-left: 2px solid var(--border);
@@ -356,6 +370,11 @@ textarea::placeholder {
   border-radius: 8px;
   padding: 0.95rem 1rem;
   overflow-x: auto;
+}
+
+@keyframes ms-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 0.85; }
 }
 
 .surface-1 {

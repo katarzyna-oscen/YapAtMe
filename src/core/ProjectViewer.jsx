@@ -56,6 +56,7 @@ export default function ProjectViewer({
   onFileRenamed,
   onConfirmAction,
   onFileDeleted,
+  onDisplayNameChanged,
 }) {
   const [name, setName] = useState('')
   const [status, setStatus] = useState('Untriaged')
@@ -161,6 +162,7 @@ export default function ProjectViewer({
 
     try {
       await writeFile(filePath, full)
+      onDisplayNameChanged?.(filePath, name.trim() || 'Untitled')
       const t = new Date().toLocaleTimeString('en-US', {
         hour: '2-digit',
         minute: '2-digit',
@@ -203,7 +205,16 @@ export default function ProjectViewer({
     const currentSlug = filePath.split('/').pop().replace('.md', '')
     const newSlug = toSlug(name.trim())
 
-    if (newSlug === currentSlug || !newSlug) return
+    if (!newSlug) return
+
+    // Compare case-insensitively: toSlug capitalises first char but filenames on disk
+    // may be all-lowercase (older files). A case-only difference is NOT a slug change.
+    if (newSlug.toLowerCase() === currentSlug.toLowerCase()) {
+      // Same slug — just persist the display-name change in frontmatter.
+      clearTimeout(saveTimer.current)
+      save(editorBody)
+      return
+    }
 
     // Slug changes — cancel any pending autosave and show rename confirmation
     clearTimeout(saveTimer.current)
@@ -241,7 +252,12 @@ export default function ProjectViewer({
         last_updated: today,
       }
       await writeFile(newPath, buildFileContent(fields, editorBody))
-      await deleteFile(oldPath)
+      // Only delete old file when it's a genuinely different path.
+      // Compare case-insensitively: macOS filesystems are case-insensitive by default,
+      // so "projects/my-project.md" and "projects/My-project.md" are the same file.
+      if (oldPath.toLowerCase() !== newPath.toLowerCase()) {
+        await deleteFile(oldPath)
+      }
 
       // Update tasks-index and context/index files
       await retargetTasksForFile(readFile, writeFile, oldPath, newPath)
@@ -439,6 +455,7 @@ export default function ProjectViewer({
                 cursor: 'pointer',
                 fontFamily: 'inherit',
                 transition: 'background .12s, border-color .12s',
+                textTransform: 'lowercase',
               }}
             >
               <span style={{ width: 5, height: 5, borderRadius: '50%', background: s.color, flexShrink: 0 }} />
@@ -497,7 +514,7 @@ export default function ProjectViewer({
           />
 
           <div key={filePath} className="milkdown-wrapper">
-            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} wikilinkSuggestions={wikilinkSuggestions ?? []} />
+            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={handleWikilinkClick} wikilinkSuggestions={wikilinkSuggestions ?? []} />
           </div>
         </div>
       </div>

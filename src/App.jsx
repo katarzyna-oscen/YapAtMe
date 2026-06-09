@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from 'react'
 import { useFileSystem } from './hooks/useFileSystem'
 import { useSettings } from './hooks/useSettings'
 import { initVault, todayInboxPath, dailyNoteTemplate } from './lib/vaultInit'
@@ -12,6 +12,7 @@ import { parseFrontmatter, buildFileContent } from './lib/frontmatter'
 import { dbGet, dbPut } from './lib/db'
 import Sidebar from './components/Sidebar'
 import ConfirmDialog from './components/ConfirmDialog'
+import WikilinkCreatePopover from './components/WikilinkCreatePopover'
 import TasksPage from './core/TasksPage'
 import CommandPage from './core/CommandPage'
 import SettingsPage from './core/SettingsPage'
@@ -23,6 +24,7 @@ const InboxPage = lazy(() => import('./core/InboxPage'))
 const NotesPage = lazy(() => import('./core/NotesPage'))
 const ArchivePage = lazy(() => import('./core/ArchivePage'))
 const VaultFileViewer = lazy(() => import('./components/VaultFileViewer'))
+const ArchiveViewer = lazy(() => import('./components/ArchiveViewer'))
 
 function resolveWikilinkTarget(linkText, tree = {}) {
   const raw = String(linkText || '').trim()
@@ -102,6 +104,55 @@ export default function App() {
   }, [newFilePaths])
   const [inboxSessionKey, setInboxSessionKey] = useState(0)
   const [toastMessage, setToastMessage] = useState('')
+  const [wikiCreatePopover, setWikiCreatePopover] = useState({ open: false, name: '', x: 0, y: 0 })
+  // path → user-authored display name (read from frontmatter, refreshed when tree changes)
+  const [entityDisplayNames, setEntityDisplayNames] = useState(() => new Map())
+
+  useEffect(() => {
+    if (!vaultReady) return
+    let cancelled = false
+    const ENTITY_FOLDERS = { people: 'full_name', projects: 'name', ideas: 'name' }
+    const entityEntries = Object.entries(ENTITY_FOLDERS).flatMap(([folder, field]) =>
+      (tree[folder] || []).filter(f => f?.kind === 'file').map(f => ({
+        path: f.path || `${folder}/${f.name}`,
+        field,
+      }))
+    )
+    const noteEntries = (tree.notes || []).filter(f => f?.kind === 'file').map(f => ({
+      path: f.path || `notes/${f.name}`,
+      field: null,
+    }))
+    const allEntries = [...entityEntries, ...noteEntries]
+    Promise.all(
+      allEntries.map(({ path, field }) =>
+        readFile(path).then(raw => {
+          let displayName
+          if (field) {
+            const { fields } = parseFrontmatter(raw)
+            displayName = fields?.[field] || null
+          } else {
+            // Notes: extract H1 title
+            const m = /^#\s+(.+)$/m.exec(raw)
+            displayName = m ? m[1].trim() : null
+          }
+          return displayName ? [path, displayName] : null
+        }).catch(() => null)
+      )
+    ).then(results => {
+      if (cancelled) return
+      setEntityDisplayNames(new Map(results.filter(Boolean)))
+    })
+    return () => { cancelled = true }
+  }, [vaultReady, tree, readFile])
+
+  const handleDisplayNameChanged = useCallback((path, name) => {
+    if (!path || !name) return
+    setEntityDisplayNames(prev => {
+      const next = new Map(prev)
+      next.set(path, name)
+      return next
+    })
+  }, [])
   const [confirmDialog, setConfirmDialog] = useState({
     open: false,
     title: '',
@@ -180,6 +231,7 @@ export default function App() {
   useEffect(() => {
     if (!vaultReady) return
     createTodayNoteIfMissing()
+    migrateTasksArchive()
 
     listTree()
       .then((result) => {
@@ -270,19 +322,29 @@ export default function App() {
       .catch(() => {})
   }
 
+  const migrateTasksArchive = async () => {
+    const oldPath = 'archive/tasks_done.md'
+    const newPath = 'archive/tasks-archive.md'
+    try {
+      const newExists = await fileExists(newPath)
+      const oldExists = await fileExists(oldPath)
+      if (!newExists) {
+        if (oldExists) {
+          const content = await readFile(oldPath)
+          await writeFile(newPath, content)
+          await deleteFile(oldPath)
+        } else {
+          await writeFile(newPath, '# Tasks Archive\n\nArchived tasks are tracked in context/tasks-index.json.\n')
+        }
+      } else if (oldExists) {
+        await deleteFile(oldPath)
+      }
+    } catch {}
+  }
+
   const handleFileRenamed = (newPath) => {
     setActiveFile(newPath)
-    listTree()
-      .then((result) => {
-        const bySection = {}
-        for (const entry of result || []) {
-          if (entry?.kind === 'directory') {
-            bySection[entry.name] = entry.children || []
-          }
-        }
-        setTree(bySection)
-      })
-      .catch(() => {})
+    refreshTree()
   }
 
   const archiveFile = async (path) => {
@@ -336,7 +398,7 @@ export default function App() {
     const folder = oldPath.split('/')[0]
     const oldStem = oldPath.split('/').pop().replace(/\.md$/i, '')
     const newSlug = toSlug(newName.trim())
-    if (!newSlug || newSlug === oldStem) return
+    if (!newSlug || newSlug.toLowerCase() === oldStem.toLowerCase()) return
 
     const newPath = `${folder}/${newSlug}.md`
 
@@ -469,17 +531,32 @@ export default function App() {
     navigate('viewer', filePath)
   }
 
-  const handleWikilinkClick = (name) => {
+  const handleWikilinkClick = (name, coords) => {
     const target = resolveWikilinkTarget(name, tree)
     if (target) {
       navigate('viewer', target)
       return
     }
+    setWikiCreatePopover({
+      open: true,
+      name: String(name || '').trim(),
+      x: coords?.x ?? window.innerWidth / 2,
+      y: coords?.y ?? 200,
+    })
+  }
 
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('memostack:toast', {
-        detail: { message: `Could not resolve [[${String(name || '').trim()}]]` },
-      }))
+  const handleCreateFromWikilink = async (folder) => {
+    const { name } = wikiCreatePopover
+    setWikiCreatePopover({ open: false, name: '', x: 0, y: 0 })
+    const { slug, content } = generateFile(folder, name)
+    const path = `${folder}/${slug}.md`
+    try {
+      await writeFile(path, content)
+      refreshTree()
+      setNewFilePaths((prev) => { const next = new Set(prev); next.add(path); return next })
+      navigate('viewer', path)
+    } catch (err) {
+      console.error('[WikilinkCreate] failed:', err?.message || err)
     }
   }
 
@@ -515,6 +592,7 @@ export default function App() {
         newFilePaths={newFilePaths}
         onMarkFileSeen={markFileSeen}
         onRenameFile={handleSidebarRename}
+        entityDisplayNames={entityDisplayNames}
       />
       <main className="flex-1 overflow-auto" style={{ background: 'var(--bg-primary)' }}>
         {activePage === 'command'  && (
@@ -595,6 +673,7 @@ export default function App() {
               onConfirmAction={showConfirm}
               onWikilinkClick={handleWikilinkClick}
               wikilinkSuggestions={wikilinkSuggestions}
+              onDisplayNameChanged={handleDisplayNameChanged}
               onFileRenamed={(newPath) => {
                 refreshTree()
                 setActiveFile(newPath)
@@ -625,6 +704,7 @@ export default function App() {
               onFileRenamed={handleFileRenamed}
               onConfirmAction={showConfirm}
               onWikilinkClick={handleWikilinkClick}
+              onDisplayNameChanged={handleDisplayNameChanged}
               onFileDeleted={() => {
                 refreshTree()
                 setActiveFile(null)
@@ -650,6 +730,7 @@ export default function App() {
               onFileRenamed={handleFileRenamed}
               onConfirmAction={showConfirm}
               onWikilinkClick={handleWikilinkClick}
+              onDisplayNameChanged={handleDisplayNameChanged}
               onFileDeleted={() => {
                 refreshTree()
                 setActiveFile(null)
@@ -658,7 +739,16 @@ export default function App() {
             />
           </Suspense>
         )}
-        {activePage === 'viewer' && activeFile && !activeFile.startsWith('notes/') && !activeFile.startsWith('people/') && !activeFile.startsWith('projects/') && (
+        {activePage === 'viewer' && (activeFile === 'archive/tasks_done.md' || activeFile === 'archive/tasks-archive.md') && (
+          <Suspense fallback={<PageLoading />}>
+            <ArchiveViewer
+              readFile={readFile}
+              writeFile={writeFile}
+              tasksVersion={tasksVersion}
+            />
+          </Suspense>
+        )}
+        {activePage === 'viewer' && activeFile && !activeFile.startsWith('notes/') && !activeFile.startsWith('people/') && !activeFile.startsWith('projects/') && activeFile !== 'archive/tasks_done.md' && activeFile !== 'archive/tasks-archive.md' && (
           <Suspense fallback={<PageLoading />}>
             <VaultFileViewer
               filePath={activeFile}
@@ -723,6 +813,15 @@ export default function App() {
           {toastMessage}
         </div>
       ) : null}
+      {wikiCreatePopover.open && (
+        <WikilinkCreatePopover
+          name={wikiCreatePopover.name}
+          coords={{ x: wikiCreatePopover.x, y: wikiCreatePopover.y }}
+          enabledModules={settings.enabledModules}
+          onSelect={handleCreateFromWikilink}
+          onClose={() => setWikiCreatePopover({ open: false, name: '', x: 0, y: 0 })}
+        />
+      )}
     </div>
   )
 }

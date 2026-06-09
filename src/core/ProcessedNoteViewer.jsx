@@ -2,9 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useMarkdownEditor } from '../hooks/useMarkdownEditor.jsx'
 import { useVoiceDictation } from '../hooks/useVoiceDictation'
 import TrashMenuButton from '../components/TrashMenuButton'
-import ConfirmDialog from '../components/ConfirmDialog'
 import { extractTagsFromMarkdown, mergeTagsIntoIndex, parseTagsFromContent } from '../lib/tags'
-
 function splitTitleBody(markdown) {
   const normalized = (markdown || '').replace(/^\uFEFF/, '')
   const lines = normalized.split('\n')
@@ -65,6 +63,7 @@ export default function ProcessedNoteViewer({
   onFileDeleted,
   onFileRenamed,
   wikilinkSuggestions,
+  onDisplayNameChanged,
 }) {
   const [title, setTitle] = useState('')
   const [editorBody, setEditorBody] = useState('')
@@ -73,7 +72,6 @@ export default function ProcessedNoteViewer({
   const [loading, setLoading] = useState(true)
   const [lastSavedTime, setLastSavedTime] = useState('')
   const [dictateHover, setDictateHover] = useState(false)
-  const [renameDialog, setRenameDialog] = useState(null) // { oldPath, newPath, oldSlug, newSlug }
   const saveTimer = useRef(null)
   const prevTranscript = useRef('')
   const renamePending = useRef(false)
@@ -173,43 +171,6 @@ export default function ProcessedNoteViewer({
     return /^\d{2}-\d{2}-\d{4}$/.test(stem)
   }
 
-  const executeRename = async () => {
-    if (!renameDialog) return
-    const { oldPath, newPath, oldSlug, newSlug } = renameDialog
-    setRenameDialog(null)
-    try {
-      const isSlugCaseOnly = oldSlug.toLowerCase() === newSlug.toLowerCase()
-      if (!isSlugCaseOnly) {
-        try {
-          const exists = typeof fileExists === 'function' ? await fileExists(newPath) : false
-          if (exists) {
-            setTitle(oldSlug.replace(/-/g, ' '))
-            return
-          }
-        } catch {}
-      }
-      clearTimeout(saveTimer.current)
-      const full = title.trim() ? `# ${title.trim()}\n\n${stripLeadingH1(editorBody)}` : stripLeadingH1(editorBody)
-      await writeFile(newPath, full)
-      await deleteFile(oldPath)
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('memostack:toast', {
-          detail: { message: `Renamed to ${newSlug}.md` },
-        }))
-      }
-      onFileRenamed?.(newPath)
-    } catch (err) {
-      console.error('Note rename failed:', err?.message || err)
-      setTitle(oldSlug.replace(/-/g, ' '))
-    }
-  }
-
-  const cancelRename = () => {
-    if (!renameDialog) return
-    setTitle(renameDialog.oldSlug.replace(/-/g, ' '))
-    setRenameDialog(null)
-  }
-
   const renameToTitle = async (newTitle) => {
     if (!filePath || !newTitle?.trim() || !isUntitledFile() || renamePending.current) return
     const slug = newTitle.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -241,20 +202,17 @@ export default function ProcessedNoteViewer({
       renameToTitle(title)
       return
     }
-    if (isDateBasedFile()) return
-    // Non-date, non-untitled note: check if slug changed and offer rename
-    const stem = (filePath || '').replace('notes/', '').replace(/\.md$/i, '')
-    const newSlug = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    if (!newSlug || newSlug === stem.toLowerCase()) return
+    // For date-based notes the filename is the stable identity (wikilinks reference the date).
+    // Changing the H1 title should never rename the file — just save in place.
     clearTimeout(saveTimer.current)
-    const newPath = `notes/${newSlug}.md`
-    setRenameDialog({ oldPath: filePath, newPath, oldSlug: stem, newSlug })
+    save(editorBody, title)
   }
 
   const handleTitleChange = (nextTitle) => {
     setTitle(nextTitle)
     setNoteTags(extractTagsFromMarkdown(`# ${nextTitle}\n\n${stripLeadingH1(editorBody)}`))
     queueSave(editorBody, nextTitle)
+    onDisplayNameChanged?.(filePath, nextTitle)
   }
 
   const handleDictate = () => {
@@ -440,17 +398,6 @@ export default function ProcessedNoteViewer({
           </div>
         </div>
       </div>
-
-      <ConfirmDialog
-        open={!!renameDialog}
-        danger={false}
-        title="Rename note"
-        message={renameDialog ? `Renaming "${renameDialog.oldSlug}" to "${title.trim()}" will rename ${renameDialog.oldSlug}.md → ${renameDialog.newSlug}.md.` : ''}
-        confirmLabel="Rename"
-        cancelLabel="Cancel"
-        onConfirm={executeRename}
-        onCancel={cancelRename}
-      />
     </div>
   )
 }

@@ -730,3 +730,96 @@ The `extractContextSection` regex used `im` flags together. The `m` flag makes `
 | `src/components/MarkdownEditor.jsx` | Punctuation-stripped wikilink name added to known-set; `innerTight` checked on resolution |
 | `src/core/dashboard-top.jsx` | `renderContextContent` markdown renderer; `ContextCard` and `SummaryCard` padding/font normalized; `listStyleType: 'disc'` on `<ul>`; `paddingLeft: 14` |
 
+---
+
+## Session update — 2026-06-09 (continued)
+
+### BUG-033 — Entity names in sidebar showing raw slugs
+
+**Problem:** Sidebar displayed slug-derived names (`content-system`) instead of the actual entity display names (`Content System`) for People, Projects, and Ideas entities.
+
+**Fix (`src/App.jsx`):**
+- Added `entityDisplayNames` state (`Map<path, displayName>`).
+- `useEffect` on `tree` change: reads frontmatter for people/projects/ideas and H1 for notes, builds the map.
+- `handleDisplayNameChanged(path, name)` callback (memoized) lets viewers push real-time name updates into the map on every save.
+- `entityDisplayNames` passed to `<Sidebar>`.
+
+**Fix (`src/components/Sidebar.jsx`):**
+- `filesFor()` checks `entityDisplayNames.has(filePath)` first; slug humanization is fallback only.
+
+**Fix (all entity viewers):**
+- `PersonViewer`, `ProjectViewer`, `ProcessedNoteViewer` accept `onDisplayNameChanged` prop and call it after each save, enabling real-time sidebar sync without waiting for a full tree refresh.
+
+---
+
+### FEATURE-003 — External link insertion (paste URL, Cmd+K)
+
+**Link CSS (`src/index.css`):**
+- `.milkdown-wrapper .milkdown .ProseMirror a[href]` → blue underlined, with hover state.
+
+**Click handler (already in `handleDOMEvents.click`):**
+- `target.closest('a[href]')` with `https?://` check → `window.open(..., '_blank', 'noopener,noreferrer')`. Prevents ProseMirror's default navigation.
+
+**Auto-link plugin (`src/components/MarkdownEditor.jsx`):**
+- `autoLinkPlugin` — ProseMirror `appendTransaction` plugin.
+- After every document change, scans all text nodes for bare `https?://` URLs not already covered by a link mark, and applies `schema.marks.link` in a follow-up transaction.
+- Works for both typed and pasted URLs; renders blue immediately without needing a reload.
+- Registered via `prosePluginsCtx` so it is independent of Milkdown's preset config ordering.
+
+**Cmd+K popover:**
+- Cmd/Ctrl+K in the editor opens a small floating input anchored near the selection.
+- Saves the ProseMirror selection (`from`, `to`, `text`) in a ref.
+- On Enter: `insertLink(url)` applies a link mark over saved selection, or inserts `url` text with link mark if no selection.
+- Esc closes without inserting.
+
+---
+
+### BUG — Project disappearing on rename
+
+**Root cause:** `executeRename` in `ProjectViewer` (and `PersonViewer`) called `deleteFile(oldPath)` after `writeFile(newPath)`. On macOS's case-insensitive filesystem, when only the display name casing changed (same slug), `oldPath === newPath` — so the delete removed the file that was just written.
+
+**Secondary cause:** `handleNameBlur` compared `newSlug === currentSlug` with case-sensitive equality. Since `toSlug` capitalises the first letter but older files on disk are all-lowercase, a case-only difference would incorrectly trigger the rename dialog, leading to the destructive delete.
+
+**Fix (`src/core/ProjectViewer.jsx` and `src/core/PersonViewer.jsx`):**
+- `handleNameBlur` (ProjectViewer): comparison is now `newSlug.toLowerCase() === currentSlug.toLowerCase()`. Cosmetic changes (same slug, different casing) now save silently in place rather than triggering a rename dialog.
+- `executeRename` (both viewers): delete guard changed to `if (oldPath.toLowerCase() !== newPath.toLowerCase())` — macOS-safe case-insensitive path comparison.
+
+**Fix (`src/App.jsx`):**
+- `handleFileRenamed` simplified to call `refreshTree()` directly instead of duplicating its logic inline.
+
+---
+
+### Archive — notes.md no longer hidden
+
+**Problem:** `archive/notes.md` (obsolete legacy file) was permanently filtered out of the Archive sidebar section by `filesFor()`, making it impossible to delete via the app. Only `tasks-archive.md` should be protected.
+
+**Fix (`src/components/Sidebar.jsx`):**
+- Removed `&& !(section === 'archive' && file.name === 'notes.md')` from the `filesFor()` filter. The file now appears with a normal `...` menu allowing deletion.
+
+---
+
+### Notes — title decoupled from filename
+
+**Problem:** Editing the H1 title of a date-based note (`09-06-2026.md`) triggered a rename confirmation dialog. Renaming would break all `[[09-06-2026]]` wikilinks and disconnect "Recent Mentions" tracking.
+
+**Decision:** Notes use their date slug as the stable, wikilink-referenced identity. The H1 title is a human label only. Only `untitled-*.md` notes (before first title entry) still auto-rename.
+
+**Fix (`src/core/ProcessedNoteViewer.jsx`):**
+- `handleTitleBlur`: for non-untitled files, saves in place via `save(editorBody, title)` — never triggers a rename dialog.
+- `executeRename`, `cancelRename`, `renameDialog` state, and `ConfirmDialog` import all removed.
+- The sidebar already displayed the H1 title (via `entityDisplayNames`) so UX is unchanged.
+
+---
+
+### Files changed in this session (2026-06-09 continued)
+
+| File | Change |
+|------|--------|
+| `src/App.jsx` | `entityDisplayNames` Map state; `handleDisplayNameChanged` callback; `entityDisplayNames` → Sidebar; `handleFileRenamed` simplified |
+| `src/components/Sidebar.jsx` | Uses `entityDisplayNames` for display names; removed `notes.md` archive filter |
+| `src/core/ProjectViewer.jsx` | `handleNameBlur` case-insensitive comparison; `executeRename` case-insensitive delete guard; `onDisplayNameChanged` wired |
+| `src/core/PersonViewer.jsx` | `executeRename` case-insensitive delete guard; `onDisplayNameChanged` wired |
+| `src/core/ProcessedNoteViewer.jsx` | Title decoupled from filename for date notes; `executeRename`/`cancelRename`/`renameDialog` removed; `onDisplayNameChanged` wired |
+| `src/components/MarkdownEditor.jsx` | `autoLinkPlugin` (appendTransaction URL auto-linker); Cmd+K popover; link click handler; `linkPastePlugin` and DOM paste listeners removed in favour of autolink |
+| `src/index.css` | Link styling: `.milkdown-wrapper .milkdown .ProseMirror a[href]` |
+
