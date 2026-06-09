@@ -47,7 +47,9 @@ function buildTokenDecorations(doc) {
         if (innerEnd > innerStart) {
           const innerName = wikiMatch[0].slice(2, -2).trim()
           const knownSet = _knownWikilinksRef.current
-          const isResolved = _knownWikilinksReadyRef.current && knownSet.has(innerName.toLowerCase())
+          const innerLower = innerName.toLowerCase()
+          const innerTight = innerLower.replace(/[^a-z0-9 ]/g, '')
+          const isResolved = _knownWikilinksReadyRef.current && (knownSet.has(innerLower) || knownSet.has(innerTight))
           const innerClass = isResolved
             ? 'ms-token ms-token-wikilink-inner'
             : 'ms-token ms-token-wikilink-inner ms-token-wikilink-unresolved'
@@ -393,7 +395,13 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
     const names = new Set()
     for (const s of wikilinkSuggestions) {
       // Add the display name (title-cased, spaces) so [[Person Name]] resolves.
-      if (s.name) names.add(s.name.toLowerCase())
+      if (s.name) {
+        names.add(s.name.toLowerCase())
+        // Also add a punctuation-stripped version so names like "Ubuntu.com Home Page"
+        // match wikilinks written as [[Ubuntu.com Home Page]] even though the
+        // filename slug dropped the dot (→ "Ubuntucom home page").
+        names.add(s.name.toLowerCase().replace(/[^a-z0-9 ]/g, ''))
+      }
       // Also add the raw filename stem (hyphens preserved) so date wikilinks
       // like [[02-06-2026]] resolve even though the display name is "02 06 2026".
       if (s.path) {

@@ -46,8 +46,11 @@ async function readFrontmatters(readFile, files, folder) {
 
 function extractContextSection(markdown, heading) {
   const text = String(markdown || '')
-  const match = text.match(new RegExp(`^##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'im'))
+  // NOTE: do NOT use the `m` flag here — it makes `$` match end-of-line, causing
+  // the lazy [\s\S]*? to stop after the first line and return only one bullet.
+  const match = text.match(new RegExp(`(?:^|\\n)##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|\\s*$)`, 'i'))
   const section = match?.[1]?.trim() || ''
+  console.log(`[extractContextSection] "${heading}":`, JSON.stringify(section.slice(0, 300)))
   return section || null
 }
 
@@ -279,10 +282,15 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
       await loadContextSnapshot()
     } catch (err) {
       console.error('Context rebuild failed:', err)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('memostack:toast', {
+          detail: { message: `Context rebuild failed: ${err?.message || 'Unknown error'}` },
+        }))
+      }
     } finally {
       setContextLoading(false)
     }
-  }, [readFile, writeFile, settings, loadContextSnapshot])
+  }, [readFile, writeFile, settings, listTree, loadContextSnapshot])
 
   const handleGenerateUpdates = async () => {
     if (!settings?.apiKey) return

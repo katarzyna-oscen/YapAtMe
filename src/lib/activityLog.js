@@ -1,5 +1,4 @@
 const ACTIVITY_LOG_PATH = 'context/activity-log.json'
-const CONTEXT_LOG_PATH = 'context/_context_log.md'
 const DAYS_TO_KEEP = 30
 
 function toIsoNow() {
@@ -35,13 +34,6 @@ async function writeActivityLogState(writeFile, state) {
   await writeFile(ACTIVITY_LOG_PATH, JSON.stringify(next, null, 2))
 }
 
-function entryToContextLogText(entry) {
-  const ts = String(entry?.timestamp || '')
-  const note = String(entry?.note_source || 'unknown')
-  const summary = String(entry?.summary || '').trim() || 'No summary'
-  return `- ${ts} | ${note} | ${summary}`
-}
-
 export async function readActivityLog(readFile) {
   const state = await readActivityLogState(readFile)
   return state.entries
@@ -52,19 +44,10 @@ export async function pruneActivityLog(readFile, writeFile) {
   const cutoff = cutoffIso(DAYS_TO_KEEP)
 
   const keep = []
-  const prune = []
   for (const entry of state.entries) {
     const ts = String(entry?.timestamp || '')
     if (ts && ts >= cutoff) keep.push(entry)
-    else prune.push(entry)
-  }
-
-  if (prune.length > 0) {
-    const lines = prune.map(entryToContextLogText).join('\n')
-    let existing = ''
-    try { existing = await readFile(CONTEXT_LOG_PATH) } catch {}
-    const block = `\n\n## Activity Log Prune (${toIsoNow()})\n${lines}\n`
-    await writeFile(CONTEXT_LOG_PATH, `${existing || ''}${block}`)
+    // Pruned entries are silently dropped — not written to _context_log.md
   }
 
   await writeActivityLogState(writeFile, {

@@ -1,6 +1,6 @@
 import { callLLM } from './llm'
 import { parseFrontmatter } from './frontmatter'
-import { getEntriesSinceLastRebuild, setActivityLogLastRebuild, pruneActivityLog } from './activityLog'
+import { readActivityLog, setActivityLogLastRebuild, pruneActivityLog } from './activityLog'
 
 const CONTEXT_PATH = 'context/_context.md'
 const CONTEXT_LOG_PATH = 'context/_context_log.md'
@@ -11,8 +11,17 @@ const REQUIRED_HEADINGS = [
   'Standing decisions',
   'Key people',
 ]
+const ACTIVITY_WINDOW_DAYS = 30
 
 let rebuildInProgress = false
+let rebuildStartedAt = 0
+const REBUILD_TIMEOUT_MS = 120_000 // 2 minutes — auto-clear stuck mutex
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function stripMarkdownFences(text) {
+  return String(text || '').replace(/```(?:markdown|json)?|```/gi, '').trim()
+}
 
 function extractSection(markdown, heading) {
   const text = String(markdown || '')
@@ -31,49 +40,6 @@ function setSection(markdown, heading, content) {
   return `${text.trim()}\n\n${block}`.trim()
 }
 
-function normalizeDecisionLine(line) {
-  return String(line || '').toLowerCase().replace(/\s+/g, ' ').trim()
-}
-
-function mergeStandingDecisions(existing, proposed) {
-  const existingLines = String(existing || '').split('\n').map((line) => line.trimEnd()).filter((line) => line.trim())
-  const proposedLines = String(proposed || '').split('\n').map((line) => line.trimEnd()).filter((line) => line.trim())
-
-  const merged = [...existingLines]
-  const seen = new Set(existingLines.map(normalizeDecisionLine))
-
-  for (const line of proposedLines) {
-    const key = normalizeDecisionLine(line)
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    merged.push(line)
-  }
-
-  if (merged.length === 0) return 'None currently.'
-  return merged.join('\n')
-}
-
-function stripMarkdownFences(text) {
-  return String(text || '').replace(/```markdown|```/gi, '').trim()
-}
-
-function validateContextStructure(content) {
-  const text = String(content || '')
-  for (const heading of REQUIRED_HEADINGS) {
-    const rx = new RegExp(`^##\\s+${heading}\\s*$`, 'gim')
-    const matches = text.match(rx) || []
-    if (matches.length !== 1) {
-      return { valid: false, reason: `Heading \"${heading}\" must appear exactly once` }
-    }
-
-    const section = extractSection(text, heading)
-    if (!section || !section.trim()) {
-      return { valid: false, reason: `Heading \"${heading}\" must contain content` }
-    }
-  }
-  return { valid: true, reason: '' }
-}
-
 function repairContextStructure(content) {
   let out = stripMarkdownFences(content)
   if (!out.trim()) out = ''
@@ -86,32 +52,95 @@ function repairContextStructure(content) {
   return out.trim()
 }
 
+function validateContextStructure(content) {
+  const text = String(content || '')
+  for (const heading of REQUIRED_HEADINGS) {
+    const rx = new RegExp(`^##\\s+${heading}\\s*$`, 'gim')
+    const matches = text.match(rx) || []
+    if (matches.length !== 1) {
+      return { valid: false, reason: `Heading "${heading}" must appear exactly once` }
+    }
+    const section = extractSection(text, heading)
+    if (!section || !section.trim()) {
+      return { valid: false, reason: `Heading "${heading}" must contain content` }
+    }
+  }
+  return { valid: true, reason: '' }
+}
+
 function formatActivityEntries(entries = []) {
   if (!Array.isArray(entries) || entries.length === 0) return '(none)'
-  return entries
+  const cutoff = new Date(Date.now() - ACTIVITY_WINDOW_DAYS * 86_400_000).toISOString()
+  const recent = entries
+    .filter((e) => String(e?.timestamp || '') >= cutoff)
+    .sort((a, b) => String(b?.timestamp || '').localeCompare(String(a?.timestamp || '')))
+    .slice(0, 30)
+  if (recent.length === 0) return '(none in last 30 days)'
+  return recent
     .map((entry) => {
-      const ts = String(entry?.timestamp || '')
+      const ts = String(entry?.timestamp || '').slice(0, 10)
       const src = String(entry?.note_source || 'unknown')
       const entities = Array.isArray(entry?.entities_mentioned) && entry.entities_mentioned.length > 0
         ? entry.entities_mentioned.join(', ')
         : 'none'
-      const decisions = Array.isArray(entry?.decisions) && entry.decisions.length > 0
-        ? entry.decisions.join(' | ')
-        : 'none'
       const tasks = Number.isFinite(entry?.tasks_created) ? entry.tasks_created : 0
-      const summary = String(entry?.summary || '').trim() || 'none'
-      return `- ${ts} | source=${src} | entities=${entities} | tasks_created=${tasks} | decisions=${decisions} | summary=${summary}`
+      const summary = String(entry?.summary || '').trim() || 'no summary'
+      return `- ${ts} | ${src} | entities: ${entities} | tasks: ${tasks} | ${summary}`
     })
     .join('\n')
+}
+
+function parseRebuildResponse(raw) {
+  const text = stripMarkdownFences(raw)
+
+  const contextMatch = text.match(/===CONTEXT===\s*([\s\S]*?)(?:===REMOVED===|===END===|$)/i)
+  const removedMatch = text.match(/===REMOVED===\s*([\s\S]*?)(?:===END===|$)/i)
+
+  // Fallback: if no delimiters, treat entire response as context
+  const contextContent = contextMatch?.[1]?.trim() || text
+  const removedText = removedMatch?.[1]?.trim() || ''
+
+  const removedItems = removedText
+    .split('\n')
+    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
+    .filter((line) => line.length > 0 && line !== '(none)' && line !== 'none')
+
+  return { contextContent, removedItems }
+}
+
+// ── Entity name sanitizer ────────────────────────────────────────────────────
+
+// Build a map of normalised-name → exact-name so we can fix LLM output that
+// drops special chars (e.g. "Ubuntucom" → "Ubuntu.com Home Page Revamp").
+function buildEntityNameMap(exactNames) {
+  const map = new Map()
+  for (const exact of exactNames) {
+    if (!exact) continue
+    const normalized = exact.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+    // Only add if normalization actually changes the name (i.e. special chars exist)
+    if (normalized && normalized !== exact.toLowerCase()) {
+      map.set(normalized, exact)
+    }
+  }
+  return map
+}
+
+function sanitizeEntityNames(text, entityNameMap) {
+  let result = text
+  for (const [normalized, exact] of entityNameMap) {
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    result = result.replace(new RegExp(escaped, 'gi'), exact)
+  }
+  return result
 }
 
 // ── Index file builders ──────────────────────────────────────────────────────
 
 async function rebuildIndexFiles(readFile, writeFile, listTree) {
-  if (typeof listTree !== 'function') return
+  if (typeof listTree !== 'function') return new Map()
 
   let tree = []
-  try { tree = await listTree() } catch { return }
+  try { tree = await listTree() } catch { return new Map() }
 
   const getFolder = (folder) => {
     if (Array.isArray(tree)) {
@@ -122,6 +151,7 @@ async function rebuildIndexFiles(readFile, writeFile, listTree) {
   }
 
   const today = new Date().toISOString().slice(0, 10)
+  const exactEntityNames = []
 
   // Projects index
   try {
@@ -132,15 +162,18 @@ async function rebuildIndexFiles(readFile, writeFile, listTree) {
         const raw = await readFile(f.path || `projects/${f.name}`)
         const { fields } = parseFrontmatter(raw)
         const name = String(fields?.name || f.name.replace(/\.md$/i, '')).trim()
+        exactEntityNames.push(name)
         const status = String(fields?.status || '').trim()
         const domain = String(fields?.domain || '').trim()
         const owner = String(fields?.owner || '').trim()
         const coreProblem = String(fields?.core_problem || '').trim()
+        const lastUpdated = String(fields?.last_updated || '').trim()
         const parts = [`**${name}**`]
         if (status) parts.push(`status: ${status}`)
         if (domain) parts.push(`domain: ${domain}`)
         if (owner) parts.push(`owner: ${owner}`)
         if (coreProblem) parts.push(`core_problem: ${coreProblem}`)
+        if (lastUpdated) parts.push(`last_updated: ${lastUpdated}`)
         lines.push(`- ${parts.join(' | ')}`)
       } catch {}
     }
@@ -157,11 +190,14 @@ async function rebuildIndexFiles(readFile, writeFile, listTree) {
         const raw = await readFile(f.path || `people/${f.name}`)
         const { fields } = parseFrontmatter(raw)
         const name = String(fields?.full_name || f.name.replace(/\.md$/i, '')).trim()
+        exactEntityNames.push(name)
         const relationship = String(fields?.relationship || '').trim()
         const role = String(fields?.role || '').trim()
+        const lastUpdated = String(fields?.last_updated || '').trim()
         const parts = [`**${name}**`]
         if (relationship) parts.push(`relationship: ${relationship}`)
         if (role) parts.push(`role: ${role}`)
+        if (lastUpdated) parts.push(`last_updated: ${lastUpdated}`)
         lines.push(`- ${parts.join(' | ')}`)
       } catch {}
     }
@@ -179,38 +215,48 @@ async function rebuildIndexFiles(readFile, writeFile, listTree) {
         const { fields } = parseFrontmatter(raw)
         const stem = f.name.replace(/\.md$/i, '')
         const name = String(fields?.name || stem).trim()
+        exactEntityNames.push(name)
         const status = String(fields?.status || '').trim()
         const domain = String(fields?.domain || '').trim()
         const tags = Array.isArray(fields?.tags) ? fields.tags.join(', ') : String(fields?.tags || '').trim()
+        const lastUpdated = String(fields?.last_updated || '').trim()
         const parts = [`**${name}**`]
         if (status) parts.push(`status: ${status}`)
         if (domain) parts.push(`domain: ${domain}`)
         if (tags) parts.push(`tags: ${tags}`)
+        if (lastUpdated) parts.push(`last_updated: ${lastUpdated}`)
         lines.push(`- ${parts.join(' | ')}`)
       } catch {}
     }
     const content = `# Ideas Index\n*Last updated: ${today}*\n\n${lines.length ? lines.join('\n') : '_No ideas found._'}\n`
     await writeFile('context/ideas-index.md', content)
   } catch {}
+
+  return buildEntityNameMap(exactEntityNames)
 }
 
+// ── Main export ──────────────────────────────────────────────────────────────
+
 export async function rebuildContext(readFile, writeFile, settings, listTree) {
-  if (rebuildInProgress) {
+  const now = Date.now()
+  if (rebuildInProgress && (now - rebuildStartedAt) < REBUILD_TIMEOUT_MS) {
     console.warn('rebuildContext skipped: rebuild already in progress')
     return
   }
 
   rebuildInProgress = true
+  rebuildStartedAt = now
 
-  let currentContext = ''
   try {
-    try {
-      currentContext = await readFile(CONTEXT_PATH)
-    } catch {}
+    // ── Step 1: Gather inputs ───────────────────────────────────────────────
+
+    let currentContext = ''
+    try { currentContext = await readFile(CONTEXT_PATH) } catch {}
 
     // Rebuild index files from entity folders before reading them into the prompt
+    let entityNameMap = new Map()
     try {
-      await rebuildIndexFiles(readFile, writeFile, listTree)
+      entityNameMap = await rebuildIndexFiles(readFile, writeFile, listTree) ?? new Map()
     } catch (err) {
       console.warn('rebuildIndexFiles failed (non-fatal):', err?.message || err)
     }
@@ -220,99 +266,99 @@ export async function rebuildContext(readFile, writeFile, settings, listTree) {
     try { peopleIndex = await readFile('context/people-index.md') } catch {}
     try { ideasIndex = await readFile('context/ideas-index.md') } catch {}
 
-    let recentEntries = []
-    try {
-      recentEntries = await getEntriesSinceLastRebuild(readFile)
-    } catch {
-      recentEntries = []
-    }
+    let allEntries = []
+    try { allEntries = await readActivityLog(readFile) } catch {}
+    const activityText = formatActivityEntries(allEntries)
 
-    const existingStandingDecisions = extractSection(currentContext, 'Standing decisions')
-    const recentEntityNames = [...new Set(
-      (recentEntries || [])
-        .flatMap((entry) => Array.isArray(entry?.entities_mentioned) ? entry.entities_mentioned : [])
-        .map((name) => String(name || '').trim())
-        .filter(Boolean)
-    )]
+    const cutoff14 = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10)
+    const today = new Date().toISOString().slice(0, 10)
 
-    const activityText = formatActivityEntries(recentEntries)
-    const entitiesText = recentEntityNames.length ? recentEntityNames.join(', ') : '(none)'
+    // ── Step 2: LLM curation pass ───────────────────────────────────────────
 
-    const prompt = `You are rebuilding a working memory context file for a knowledge worker.
+    const systemPrompt = `You are curating a working memory file for a knowledge worker. Current context and recent activity are provided. Your job:
+1. Keep items that have been actively touched in the last 14 days
+2. Remove items with no activity in 14+ days — return them in a 'removed' list with a one-line reason
+3. Resurface items if they appear in recent notes (check for name matches in activity log)
+4. Enforce max 5 items per section: Narrative thread (narrative only), Current focus (top priorities right now), Active projects, Standing decisions, Key people
+5. Write _context.md as clean markdown. Be selective — only what matters right now.
+6. Entity names must be preserved exactly as they appear in the source files, including dots, hyphens, and special characters. For example: Ubuntu.com Home Page Revamp, NOT Ubuntucom Home Page Revamp. Never normalise or alter entity names.`
 
-Use ONLY these inputs:
+    const userPrompt = `Today's date: ${today}
+14-day cutoff: ${cutoff14}
 
-Activity log entries (since last rebuild):
+Current _context.md:
+${currentContext || '(empty — generate fresh from available data)'}
+
+Recent activity log (last 30 days, newest first):
 ${activityText}
 
-Projects index:
+Projects index (with last_updated dates):
 ${projectsIndex || '(missing)'}
 
-People index:
+People index (with last_updated dates):
 ${peopleIndex || '(missing)'}
 
-Ideas index:
+Ideas index (with last_updated dates):
 ${ideasIndex || '(missing)'}
 
-Current standing decisions from existing _context.md (carry forward unless contradicted):
-${existingStandingDecisions || '(none)'}
+Output format — use EXACTLY these delimiters, no exceptions:
 
-Recent activity entity names (for Key people intersection):
-${entitiesText}
-
-Output requirements:
-- Return markdown ONLY with this exact heading order and exact heading text:
+===CONTEXT===
 ## Narrative thread
-[2–3 sentence flowing paragraph about recent activity]
+[narrative paragraph only — 2–4 sentences about the overall situation right now. No bullet lists.]
 
 ## Current focus
-[paragraph + active themes as bullet list]
+[max 3 bullets — the single most important priorities or next actions right now. What should be worked on today/this week.]
 
 ## Active projects
-[only projects with status: In Progress / To Be Deployed / Blocked, one entry each]
+[max 5 projects with recent activity or status In Progress / Blocked. One bullet per project.]
 
 ## Standing decisions
-[ONLY propose NEW standing decisions discovered in activity entries. Do NOT rewrite or restate existing decisions.]
+[max 5 decisions relevant to active work. Add new ones from recent activity if any.]
 
 ## Key people
-[only people that appear in recent activity entity names and are present in people index, with why relevant]
+[max 5 people who appear in recent activity. One bullet per person with why they are relevant right now.]
 
-Rules:
-- Do not scan or infer from any source other than the inputs provided above.
-- Keep wording concise.
-- Preserve exact casing of proper nouns.
-- If a section has no data, write one short line: "None currently."`
+===REMOVED===
+[One line per removed item: "item text | reason it was removed". If nothing removed, write exactly: (none)]
+
+===END===`
 
     const raw = await callLLM(
-      [{ role: 'user', content: prompt }],
-      'You are a precise markdown writer. Return only the requested markdown, nothing else.',
+      [{ role: 'user', content: userPrompt }],
+      systemPrompt,
       settings
     )
 
-    let newContext = stripMarkdownFences(raw)
+    // ── Step 3: Parse, repair, validate ────────────────────────────────────
 
-    const proposedDecisions = extractSection(newContext, 'Standing decisions')
-    const mergedDecisions = mergeStandingDecisions(existingStandingDecisions, proposedDecisions)
-    newContext = setSection(newContext, 'Standing decisions', mergedDecisions)
+    const { contextContent, removedItems } = parseRebuildResponse(raw)
 
-    const repairedContext = repairContextStructure(newContext)
+    // Fix LLM-normalised entity names (e.g. "Ubuntucom" → "Ubuntu.com")
+    const sanitizedContent = sanitizeEntityNames(contextContent, entityNameMap)
+    console.log('[rebuildContext] entity name map size:', entityNameMap.size)
+
+    const repairedContext = repairContextStructure(sanitizedContent)
     const validation = validateContextStructure(repairedContext)
     if (!validation.valid) {
       console.warn(`Context rebuild validation failed. Keeping existing context. Reason: ${validation.reason}`)
       return
     }
 
-    const date = new Date().toISOString().split('T')[0]
-    const logEntry = `\n---\n## Archived ${date}\n\n${currentContext}\n`
-
-    try {
-      const existingLog = await readFile(CONTEXT_LOG_PATH)
-      await writeFile(CONTEXT_LOG_PATH, existingLog + logEntry)
-    } catch {
-      await writeFile(CONTEXT_LOG_PATH, `# Context Log\n${logEntry}`)
-    }
+    // ── Step 4: Write outputs ───────────────────────────────────────────────
 
     await writeFile(CONTEXT_PATH, repairedContext)
+
+    // Append ONLY removed items — skip entirely if nothing was removed
+    if (removedItems.length > 0) {
+      const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
+      const logBlock = `\n## Rebuild ${timestamp} — ${removedItems.length} item${removedItems.length === 1 ? '' : 's'} removed\n${removedItems.map((item) => `- ${item}`).join('\n')}\n`
+      let existingLog = ''
+      try { existingLog = await readFile(CONTEXT_LOG_PATH) } catch {}
+      await writeFile(CONTEXT_LOG_PATH, `${existingLog || '# Context Log'}${logBlock}`)
+    }
+
+    // ── Step 5: Bookkeeping ─────────────────────────────────────────────────
 
     try {
       await setActivityLogLastRebuild(writeFile, readFile)
@@ -329,3 +375,4 @@ Rules:
     rebuildInProgress = false
   }
 }
+

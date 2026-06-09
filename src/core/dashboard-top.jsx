@@ -463,7 +463,7 @@ function SummaryCard({ title, data, loading, canGenerate, onGenerate, placeholde
     ? new Date(data.generated_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: 12, minHeight: 180 }}>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: '16px 18px 14px', minHeight: 180 }}>
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <h3
@@ -500,7 +500,7 @@ function SummaryCard({ title, data, loading, canGenerate, onGenerate, placeholde
           </button>
         </div>
 
-        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text-dim)', fontSize: 14, lineHeight: 1.6, flex: 1 }}>
+        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text-dim)', fontSize: 13, lineHeight: 1.6, flex: 1 }}>
           {data?.text || placeholder}
         </pre>
 
@@ -522,9 +522,43 @@ function formatRebuildTimestamp(timestamp) {
   return `updated ${day}, ${time}`
 }
 
+function renderContextContent(text) {
+  if (!text) return null
+  const lines = text.split('\n')
+  const out = []
+  let bulletGroup = []
+
+  const flushBullets = () => {
+    if (bulletGroup.length === 0) return
+    out.push(
+      <ul key={`ul-${out.length}`} style={{ margin: '2px 0 6px', paddingLeft: 14, listStyleType: 'disc' }}>
+        {bulletGroup.map((item, i) => (
+          <li key={i} style={{ marginBottom: 3 }}>{item}</li>
+        ))}
+      </ul>
+    )
+    bulletGroup = []
+  }
+
+  for (const line of lines) {
+    const bulletMatch = line.match(/^[*\-]\s+(.*)$/)
+    if (bulletMatch) {
+      bulletGroup.push(bulletMatch[1])
+    } else {
+      flushBullets()
+      const trimmed = line.trim()
+      if (trimmed) {
+        out.push(<p key={`p-${out.length}`} style={{ margin: '0 0 6px' }}>{trimmed}</p>)
+      }
+    }
+  }
+  flushBullets()
+  return out
+}
+
 function ContextCard({ title, content, loading, placeholder, footer }) {
   return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: 12, minHeight: 180 }}>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: '16px 18px 14px', minHeight: 180 }}>
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         <h3
           style={{
@@ -539,9 +573,12 @@ function ContextCard({ title, content, loading, placeholder, footer }) {
           {title}
         </h3>
 
-        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: loading ? 'var(--text-very-dim)' : 'var(--text-dim)', fontSize: 14, lineHeight: 1.6, flex: 1 }}>
-          {loading ? 'Rebuilding context…' : (content || placeholder)}
-        </pre>
+        <div style={{ margin: 0, color: loading ? 'var(--text-very-dim)' : 'var(--text-dim)', fontSize: 13, lineHeight: 1.6, flex: 1 }}>
+          {loading
+            ? 'Rebuilding context…'
+            : (content ? renderContextContent(content) : <span style={{ color: 'var(--text-very-dim)' }}>{placeholder}</span>)
+          }
+        </div>
 
         {footer && (
           <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
