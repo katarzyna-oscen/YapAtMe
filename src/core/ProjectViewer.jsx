@@ -6,7 +6,10 @@ import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import DictateBtn from '../components/DictateBtn'
 import TrashMenuButton from '../components/TrashMenuButton'
 import TaskPanel from '../components/TaskPanel'
-import { readTasksIndex, resolveTaskEntry } from '../lib/tasksIndex'
+import { readTasksIndex, resolveTaskEntry, retargetTasksForFile } from '../lib/tasksIndex'
+import { invalidateFileIndex } from '../lib/fileIndex'
+import ConfirmDialog from '../components/ConfirmDialog'
+import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
 
 const STATUS_CYCLE = ['Untriaged', 'Triaged', 'Building', 'Blocked', 'Done']
 
@@ -45,7 +48,11 @@ export default function ProjectViewer({
   deleteFile,
   renameFile,
   fileExists,
+  listTree,
   tasksVersion,
+  wikilinkSuggestions,
+  onNavigate,
+  onTasksChanged,
   onFileRenamed,
   onConfirmAction,
   onFileDeleted,
@@ -65,6 +72,7 @@ export default function ProjectViewer({
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState('idle')
   const [lastSavedTime, setLastSavedTime] = useState('')
+  const [renameDialog, setRenameDialog] = useState(null)
 
   const saveTimer = useRef(null)
   const prevTranscript = useRef('')
@@ -188,33 +196,81 @@ export default function ProjectViewer({
     }, 800)
   }, [status, domain, owner, coreProblem])
 
-  const handleNameBlur = async () => {
+  const handleNameBlur = () => {
     if (!filePath || !name.trim()) return
 
     const folder = filePath.split('/')[0]
     const currentSlug = filePath.split('/').pop().replace('.md', '')
     const newSlug = toSlug(name.trim())
-    const caseOnlyRename = newSlug.toLowerCase() === currentSlug.toLowerCase() && newSlug !== currentSlug
 
     if (newSlug === currentSlug || !newSlug) return
 
+    // Slug changes — cancel any pending autosave and show rename confirmation
+    clearTimeout(saveTimer.current)
     const newPath = `${folder}/${newSlug}.md`
+    setRenameDialog({ oldPath: filePath, newPath, oldSlug: currentSlug, newSlug })
+  }
+
+  const executeRename = async () => {
+    if (!renameDialog) return
+    const { oldPath, newPath, oldSlug, newSlug } = renameDialog
+    setRenameDialog(null)
 
     try {
-      if (!caseOnlyRename) {
-        const exists = await fileExists(newPath)
-        if (exists) {
-          setName(currentSlug.replace(/-/g, ' '))
-          return
-        }
+      // Check for collision only when it's not a case-only slug change
+      const isSlugCaseOnly = oldSlug.toLowerCase() === newSlug.toLowerCase()
+      if (!isSlugCaseOnly) {
+        try {
+          const exists = await fileExists(newPath)
+          if (exists) {
+            setName(oldSlug.replace(/-/g, ' '))
+            return
+          }
+        } catch {}
       }
 
-      await save(editorBody)
-      await renameFile(filePath, newPath)
+      // Write new content to new path, then delete old path
+      const today = new Date().toISOString().slice(0, 10)
+      const fields = {
+        type: 'project',
+        name: name.trim() || 'Untitled',
+        status,
+        domain,
+        owner,
+        core_problem: coreProblem,
+        last_updated: today,
+      }
+      await writeFile(newPath, buildFileContent(fields, editorBody))
+      await deleteFile(oldPath)
+
+      // Update tasks-index and context/index files
+      await retargetTasksForFile(readFile, writeFile, oldPath, newPath)
+      for (const ctxPath of [
+        'context/_context.md',
+        'context/_context_log.md',
+        'context/projects-index.md',
+        'context/people-index.md',
+        'context/ideas-index.md',
+      ]) {
+        try {
+          const txt = await readFile(ctxPath)
+          if (txt.includes(oldPath)) {
+            await writeFile(ctxPath, txt.split(oldPath).join(newPath))
+          }
+        } catch {}
+      }
+
+      await invalidateFileIndex()
       onFileRenamed?.(newPath)
     } catch (err) {
       console.error('Rename failed:', err.message)
     }
+  }
+
+  const cancelRename = () => {
+    if (!renameDialog) return
+    setName(renameDialog.oldSlug.replace(/-/g, ' '))
+    setRenameDialog(null)
   }
 
   const handleDictate = () => {
@@ -229,7 +285,18 @@ export default function ProjectViewer({
 
   const handleResolveTask = async (id) => {
     await resolveTaskEntry(readFile, writeFile, id)
+    onTasksChanged?.()
     await loadStats(filePath)
+  }
+
+  const handleWikilinkClick = async (name) => {
+    const target = await resolveWikilink(name, listTree)
+    if (!target) {
+      emitFileNotFoundToast()
+      return
+    }
+    const page = target.startsWith('inbox/') ? 'inbox' : 'viewer'
+    onNavigate?.(page, target)
   }
 
   const cycleStatus = () => {
@@ -244,12 +311,14 @@ export default function ProjectViewer({
     const content = await readFile(filePath)
     await writeFile(`archive/${filename}`, content)
     await deleteFile(filePath)
+    await invalidateFileIndex()
     onFileDeleted?.()
   }
 
   const handleDelete = async () => {
     if (!filePath) return
     await deleteFile(filePath)
+    await invalidateFileIndex()
     onFileDeleted?.()
   }
 
@@ -293,12 +362,16 @@ export default function ProjectViewer({
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '32px 48px 48px', maxWidth: 760 }}>
-          <input
-            type="text"
+          <textarea
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value)
+              e.target.style.height = 'auto'
+              e.target.style.height = e.target.scrollHeight + 'px'
+            }}
             onBlur={handleNameBlur}
             placeholder="Project name"
+            rows={1}
             style={{
               display: 'block',
               width: '100%',
@@ -312,14 +385,23 @@ export default function ProjectViewer({
               padding: 0,
               marginBottom: 10,
               fontFamily: 'inherit',
+              resize: 'none',
+              overflow: 'hidden',
+              lineHeight: 1.25,
+              minHeight: '1.25em',
             }}
+            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
           />
 
-          <input
-            type="text"
+          <textarea
             value={coreProblem}
-            onChange={(e) => setCoreProblem(e.target.value)}
+            onChange={(e) => {
+              setCoreProblem(e.target.value)
+              e.target.style.height = 'auto'
+              e.target.style.height = e.target.scrollHeight + 'px'
+            }}
             placeholder="What problem does this solve?"
+            rows={1}
             style={{
               display: 'block',
               width: '100%',
@@ -332,7 +414,12 @@ export default function ProjectViewer({
               padding: 0,
               marginBottom: 16,
               fontFamily: 'inherit',
+              resize: 'none',
+              overflow: 'hidden',
+              lineHeight: 1.5,
+              minHeight: '1.5em',
             }}
+            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
           />
 
           <div style={{ display: 'flex', gap: 6, marginBottom: 28, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -406,13 +493,25 @@ export default function ProjectViewer({
             tasks={tasks}
             sections={['## Open Actions', '## Delegations', '## Decisions']}
             onResolve={handleResolveTask}
+            onWikilinkClick={handleWikilinkClick}
           />
 
           <div key={filePath} className="milkdown-wrapper">
-            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} />
+            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} wikilinkSuggestions={wikilinkSuggestions ?? []} />
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!renameDialog}
+        danger={false}
+        title="Rename project"
+        message={renameDialog ? `Renaming "${renameDialog.oldSlug.replace(/-/g, ' ')}" to "${name}" will rename ${renameDialog.oldSlug}.md → ${renameDialog.newSlug}.md and update all vault references.` : ''}
+        confirmLabel="Rename"
+        cancelLabel="Cancel"
+        onConfirm={executeRename}
+        onCancel={cancelRename}
+      />
     </div>
   )
 }

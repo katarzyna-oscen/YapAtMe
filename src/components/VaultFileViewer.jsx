@@ -3,7 +3,7 @@ import { useMarkdownEditor } from '../hooks/useMarkdownEditor.jsx'
 import { invalidateFileIndex } from '../lib/fileIndex'
 import TrashMenuButton from './TrashMenuButton'
 
-export default function VaultFileViewer({ filePath, readFile, writeFile, deleteFile, onArchiveFile, onDeleteFile, onFileDeleted, onConfirmAction }) {
+export default function VaultFileViewer({ filePath, readFile, writeFile, deleteFile, onWikilinkClick, onArchiveFile, onDeleteFile, onFileDeleted, onConfirmAction }) {
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState('idle')
@@ -115,7 +115,7 @@ export default function VaultFileViewer({ filePath, readFile, writeFile, deleteF
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '32px 48px 48px', maxWidth: 760 }} className="milkdown-wrapper">
-          <EditorComponent key={filePath} initialValue={content} onChange={handleChange} />
+          <EditorComponent key={filePath} initialValue={content} onChange={handleChange} onWikilinkClick={onWikilinkClick} />
         </div>
       </div>
     </div>

@@ -2,11 +2,15 @@ import { useState } from 'react'
 import { MODULE_REGISTRY } from '../lib/modules'
 import { generateFile } from '../lib/templates'
 import { invalidateFileIndex } from '../lib/fileIndex'
+import { restoreTasksForRecreatedPerson } from '../lib/tasksIndex'
+import { PrimaryButton, SecondaryButton } from './ui/Buttons'
 
 const TYPE_TO_MODULE = { person: 'people', project: 'projects', idea: 'ideas' }
 
-export default function EntityCreateModal({ unknown, writeFile, onCreated, onCancel }) {
+export default function EntityCreateModal({ unknown, readFile, writeFile, onCreated, onCancel }) {
   const [name, setName] = useState(unknown.name)
+  const [relationship, setRelationship] = useState('')
+  const [role, setRole] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
 
@@ -17,9 +21,9 @@ export default function EntityCreateModal({ unknown, writeFile, onCreated, onCan
       <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
         <div className="bg-[var(--panel)] border border-[var(--border)] rounded-xl p-6 w-96">
           <p className="text-[var(--danger)] text-sm">Unknown module type: {unknown.type}</p>
-          <button onClick={onCancel} className="mt-4 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-            Close
-          </button>
+          <div className="mt-4">
+            <SecondaryButton onClick={onCancel}>Close</SecondaryButton>
+          </div>
         </div>
       </div>
     )
@@ -43,10 +47,16 @@ export default function EntityCreateModal({ unknown, writeFile, onCreated, onCan
         : 'Untitled'
 
       const filePath = `${mod.vaultFolder}/${normalizedSlug}.md`
-      const generated = generateFile(mod.vaultFolder, name.trim())
+      const generated = generateFile(mod.vaultFolder, name.trim(), {
+        relationship,
+        role,
+      })
       const finalContent = generated.content
 
       await writeFile(filePath, finalContent)
+      if (mod.vaultFolder === 'people' && typeof readFile === 'function') {
+        await restoreTasksForRecreatedPerson(readFile, writeFile, filePath)
+      }
       await invalidateFileIndex()
       onCreated(filePath)
     } catch (err) {
@@ -78,19 +88,43 @@ export default function EntityCreateModal({ unknown, writeFile, onCreated, onCan
           />
         </label>
 
+        {mod.vaultFolder === 'people' && (
+          <>
+            <label className="block mb-4">
+              <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Relationship</span>
+              <input
+                type="text"
+                value={relationship}
+                onChange={(e) => setRelationship(e.target.value)}
+                className="mt-1.5 w-full bg-[var(--panel-2)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors"
+                placeholder="Friend, colleague, client..."
+              />
+            </label>
+
+            <label className="block mb-4">
+              <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Role</span>
+              <input
+                type="text"
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                className="mt-1.5 w-full bg-[var(--panel-2)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] transition-colors"
+                placeholder="Designer, engineer, partner..."
+              />
+            </label>
+          </>
+        )}
+
         {error && <p className="text-xs text-[var(--danger)] mb-4">{error}</p>}
 
         <div className="flex items-center justify-end gap-3">
-          <button onClick={onCancel} className="px-4 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
-            Cancel
-          </button>
-          <button
+          <SecondaryButton onClick={onCancel}>Cancel</SecondaryButton>
+          <PrimaryButton
             onClick={handleCreate}
             disabled={saving || !name.trim()}
-            className="px-4 py-2 bg-[var(--accent)] text-[var(--bg-primary)] text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             {saving ? 'Creating…' : `Create ${mod.singularLabel || mod.label}`}
-          </button>
+          </PrimaryButton>
         </div>
       </div>
     </div>

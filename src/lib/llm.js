@@ -56,57 +56,110 @@ function resolve(settings) {
   }
 }
 
+function isAuthErrorMessage(message = '') {
+  const m = String(message || '').toLowerCase()
+  return m.includes('401') || m.includes('403') || m.includes('unauthorized') || m.includes('invalid api key') || m.includes('api key')
+}
+
+function isRetryableLLMError(message = '') {
+  const m = String(message || '').toLowerCase()
+  return m.includes('unexpected end of json input')
+    || m.includes('networkerror')
+    || m.includes('failed to fetch')
+    || m.includes('timed out')
+    || m.includes('502')
+    || m.includes('503')
+    || m.includes('504')
+}
+
+async function parseJsonResponse(res) {
+  const raw = await res.text()
+  if (!raw || !raw.trim()) {
+    throw new Error('LLM returned an empty response body')
+  }
+
+  try {
+    return JSON.parse(raw)
+  } catch (err) {
+    const snippet = raw.slice(0, 180).replace(/\s+/g, ' ')
+    throw new Error(`Unexpected end of JSON input (provider response parse failed): ${snippet}`)
+  }
+}
+
+async function withRetry(task, attempts = 2) {
+  let lastErr
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await task()
+    } catch (err) {
+      lastErr = err
+      const canRetry = i < attempts - 1 && isRetryableLLMError(err?.message || '')
+      if (!canRetry) break
+    }
+  }
+  throw lastErr
+}
+
 async function callOpenAICompat(messages, systemPrompt, { apiKey, model, baseUrl }, maxTokens = 4096) {
-  const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`
-  const headers = { 'Content-Type': 'application/json' }
-  if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+  return withRetry(async () => {
+    const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`
+    const headers = { 'Content-Type': 'application/json' }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
 
-  const body = {
-    model,
-    messages: [
-      ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-      ...messages,
-    ],
-    max_tokens: maxTokens,
-  }
+    const body = {
+      model,
+      messages: [
+        ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+        ...messages,
+      ],
+      max_tokens: maxTokens,
+    }
 
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText)
-    throw new Error(`LLM error ${res.status}: ${err}`)
-  }
-  const data = await res.json()
-  return data.choices?.[0]?.message?.content ?? ''
+    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+    if (!res.ok) {
+      const err = await res.text().catch(() => res.statusText)
+      throw new Error(`LLM error ${res.status}: ${err}`)
+    }
+    const data = await parseJsonResponse(res)
+    return data.choices?.[0]?.message?.content ?? ''
+  })
 }
 
 async function callAnthropic(messages, systemPrompt, { apiKey, model, baseUrl }, maxTokens = 4096) {
-  const url = `${baseUrl.replace(/\/$/, '')}/v1/messages`
-  const headers = {
-    'Content-Type':      'application/json',
-    'x-api-key':         apiKey,
-    'anthropic-version': '2023-06-01',
-  }
+  return withRetry(async () => {
+    const url = `${baseUrl.replace(/\/$/, '')}/v1/messages`
+    const headers = {
+      'Content-Type':      'application/json',
+      'x-api-key':         apiKey,
+      'anthropic-version': '2023-06-01',
+    }
 
-  const body = {
-    model,
-    max_tokens: maxTokens,
-    ...(systemPrompt ? { system: systemPrompt } : {}),
-    messages,
-  }
+    const body = {
+      model,
+      max_tokens: maxTokens,
+      ...(systemPrompt ? { system: systemPrompt } : {}),
+      messages,
+    }
 
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
-  if (!res.ok) {
-    const err = await res.text().catch(() => res.statusText)
-    throw new Error(`LLM error ${res.status}: ${err}`)
-  }
-  const data = await res.json()
-  return data.content?.[0]?.text ?? ''
+    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+    if (!res.ok) {
+      const err = await res.text().catch(() => res.statusText)
+      throw new Error(`LLM error ${res.status}: ${err}`)
+    }
+    const data = await parseJsonResponse(res)
+    return data.content?.[0]?.text ?? ''
+  })
 }
 
 export async function callLLM(messages, systemPrompt, settings, maxTokens = 4096) {
   const r = resolve(settings)
+  if (!r.apiKey && PROVIDERS[r.provider]?.needsKey) {
+    throw new Error('Missing API key for selected provider')
+  }
   if (r.provider === 'anthropic') {
     return callAnthropic(messages, systemPrompt, r, maxTokens)
   }
   return callOpenAICompat(messages, systemPrompt, r, maxTokens)
 }
+
+export { isAuthErrorMessage }

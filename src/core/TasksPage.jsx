@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry } from '../lib/tasksIndex'
+import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry, notifyTasksIndexChanged } from '../lib/tasksIndex'
 import { addTaskComment } from '../lib/taskMarker'
-import { appendToSection } from '../lib/vaultWriter'
 
 const TASK_CATEGORIES = [
   { id: 'needs-call', label: 'Needs Your Call', hue: 25, description: 'blockers and decisions waiting on you' },
@@ -19,6 +18,7 @@ const SECTION_TO_CATEGORY = {
   '## Delegate': 'delegate',
   '## Decisions': 'decisions',
   '## Talk About': 'talk-about',
+  '## My Actions': 'actions',
 }
 
 const CATEGORY_TO_SECTION = {
@@ -54,6 +54,8 @@ function normalizeTaskDisplayText(raw) {
 }
 
 function indexEntryToTask(entry) {
+  if (entry.status === 'archived') return null
+
   let inferredCategory = entry.status === 'done'
     ? 'done'
     : (CATEGORY_IDS.has(entry.category) ? entry.category : (SECTION_TO_CATEGORY[entry.section] ?? 'actions'))
@@ -113,7 +115,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
     try {
       const raw = await readFile('context/tasks-index.json')
       const entries = JSON.parse(raw)
-      const loaded = entries.map(indexEntryToTask)
+      const loaded = entries.map(indexEntryToTask).filter(Boolean)
       setTasks(loaded)
       setExpandedComments(new Set())
     } catch {
@@ -152,6 +154,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
       const entries = JSON.parse(raw)
       const next = Array.isArray(entries) ? entries.filter((entry) => entry.id !== taskId) : []
       await writeFile('context/tasks-index.json', JSON.stringify(next, null, 2))
+      notifyTasksIndexChanged()
     } catch {}
   }, [readFile, writeFile])
 
@@ -195,6 +198,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         }
       })
       await writeFile('context/tasks-index.json', JSON.stringify(next, null, 2))
+      notifyTasksIndexChanged()
     } catch (err) {
       console.error('Update comment failed:', err?.message || err)
     }
@@ -224,6 +228,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         return updated
       })
       await writeFile('context/tasks-index.json', JSON.stringify(next, null, 2))
+      notifyTasksIndexChanged()
     } catch (err) {
       console.error('Persist task meta failed:', err?.message || err)
     }
@@ -277,6 +282,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         return updated
       })
       await writeFile('context/tasks-index.json', JSON.stringify(next, null, 2))
+      notifyTasksIndexChanged()
     } catch (err) {
       console.error('Update task failed:', err?.message || err)
     }
@@ -362,17 +368,11 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
 
       entries.unshift(newEntry)
       await writeFile('context/tasks-index.json', JSON.stringify(entries, null, 2))
-
-      if (projFile && fileExists) {
-        const exists = await fileExists(projFile)
-        if (exists) {
-          await appendToSection(readFile, writeFile, projFile, section, `- [ ] ${text}`)
-        }
-      }
+      notifyTasksIndexChanged()
     } catch (err) {
       console.error('Add task failed:', err.message)
     }
-  }, [draft, draftEntityPath, draftCategory, readFile, writeFile, fileExists])
+  }, [draft, draftEntityPath, draftCategory, readFile, writeFile])
 
   const removeAllDone = useCallback(async (ids) => {
     const ok = window.confirm("Removed tasks are permanently deleted and won't appear in your daily Updates. Mark as done instead to keep a record. Continue?")
@@ -543,6 +543,8 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         )}
 
         {TASK_CATEGORIES.map((cat) => {
+          const peopleModuleEnabled = settings?.enabledModules?.people !== false
+          if (!peopleModuleEnabled && (cat.id === 'talk-about' || cat.id === 'delegate')) return null
           const items = byCategory.get(cat.id) || []
           const showDropZone = overEmptyCat === cat.id && items.every((task) => task.id !== dragId)
           if (cat.isDone && items.length === 0) return null

@@ -1,9 +1,15 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
 import { useFileSystem } from './hooks/useFileSystem'
 import { useSettings } from './hooks/useSettings'
 import { initVault, todayInboxPath, dailyNoteTemplate } from './lib/vaultInit'
-import { generateFile } from './lib/templates'
+import { generateFile, toSlug } from './lib/templates'
 import { mergeTagsIntoIndex } from './lib/tags'
+import { invalidateFileIndex } from './lib/fileIndex'
+import { restoreTasksForRecreatedPerson, retargetTasksForFile } from './lib/tasksIndex'
+import { TASKS_INDEX_CHANGED_EVENT } from './lib/tasksIndex'
+import { clearProcessedState } from './lib/processedNotes'
+import { parseFrontmatter, buildFileContent } from './lib/frontmatter'
+import { dbGet, dbPut } from './lib/db'
 import Sidebar from './components/Sidebar'
 import ConfirmDialog from './components/ConfirmDialog'
 import TasksPage from './core/TasksPage'
@@ -17,6 +23,44 @@ const InboxPage = lazy(() => import('./core/InboxPage'))
 const NotesPage = lazy(() => import('./core/NotesPage'))
 const ArchivePage = lazy(() => import('./core/ArchivePage'))
 const VaultFileViewer = lazy(() => import('./components/VaultFileViewer'))
+
+function resolveWikilinkTarget(linkText, tree = {}) {
+  const raw = String(linkText || '').trim()
+  if (!raw) return null
+  const value = raw.split('|')[0].trim()
+  if (!value) return null
+
+  const dateMatch = value.match(/^(\d{2})-(\d{2})-(\d{4})$/)
+  if (dateMatch) {
+    const direct = `notes/${value}.md`
+    const alt = `notes/${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}.md`
+    const noteSet = new Set((tree?.notes || []).map((entry) => entry?.path).filter(Boolean))
+    if (noteSet.has(direct)) return direct
+    if (noteSet.has(alt)) return alt
+  }
+
+  const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  if (!slug) return null
+
+  // tightSlug removes all non-alphanumeric chars entirely (handles Ubuntu.com → ubuntucom)
+  const tightSlug = value.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '-').replace(/^-+|-+$/g, '')
+  const candidates = [
+    `people/${slug}.md`,
+    `people/${tightSlug}.md`,
+    `projects/${slug}.md`,
+    `projects/${tightSlug}.md`,
+    `projects/${tightSlug}s.md`,
+    `ideas/${slug}.md`,
+    `ideas/${tightSlug}.md`,
+    `notes/${value}.md`,
+    `notes/${slug}.md`,
+  ]
+
+  const allEntries = Object.values(tree || {}).flatMap((arr) => Array.isArray(arr) ? arr : [])
+  const pathToOriginal = new Map(allEntries.map((entry) => [String(entry?.path || '').toLowerCase(), entry?.path]).filter(([k]) => k))
+  const match = candidates.find((path) => pathToOriginal.has(path.toLowerCase()))
+  return match ? pathToOriginal.get(match.toLowerCase()) : null
+}
 
 export default function App() {
   const { settings, saveSettings } = useSettings()
@@ -42,6 +86,22 @@ export default function App() {
   const [tree, setTree] = useState({})
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
   const [tasksVersion, setTasksVersion] = useState(0)
+  const [newFilePaths, setNewFilePaths] = useState(() => new Set())
+
+  // Persist newFilePaths to IndexedDB so chip survives reload
+  useEffect(() => {
+    dbGet('settings', 'newFilePaths').then((stored) => {
+      if (Array.isArray(stored) && stored.length > 0) {
+        setNewFilePaths(new Set(stored))
+      }
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    dbPut('settings', 'newFilePaths', [...newFilePaths]).catch(() => {})
+  }, [newFilePaths])
+  const [inboxSessionKey, setInboxSessionKey] = useState(0)
+  const [toastMessage, setToastMessage] = useState('')
   const [confirmDialog, setConfirmDialog] = useState({
     open: false,
     title: '',
@@ -50,6 +110,28 @@ export default function App() {
     danger: true,
     onConfirm: null,
   })
+
+  const wikilinkSuggestions = useMemo(() => {
+    const TYPE_MAP = { people: 'person', projects: 'project', ideas: 'idea' }
+    const RANK = { person: 0, project: 1, idea: 2, note: 3 }
+    const seen = new Set()
+    const suggestions = []
+    for (const [folder, entries] of Object.entries(tree)) {
+      if (!Array.isArray(entries)) continue
+      for (const entry of entries) {
+        if (!entry || entry.kind !== 'file') continue
+        const path = `${folder}/${entry.name}`
+        if (seen.has(path)) continue
+        seen.add(path)
+        const base = entry.name.replace(/\.md$/i, '')
+        if (!base) continue
+        const name = base.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+        suggestions.push({ name, path, type: TYPE_MAP[folder] || 'note' })
+      }
+    }
+    suggestions.sort((a, b) => (RANK[a.type] ?? 3) - (RANK[b.type] ?? 3) || a.name.localeCompare(b.name))
+    return suggestions
+  }, [tree])
 
   const showConfirm = ({ title, message, confirmLabel = 'Delete', danger = true, onConfirm }) => {
     setConfirmDialog({ open: true, title, message, confirmLabel, danger, onConfirm })
@@ -112,21 +194,27 @@ export default function App() {
       .catch(() => setTree({}))
   }, [vaultReady, listTree, vaultInitialised])
 
-  if (!vaultReady) {
-    return (
-      <VaultPicker
-        onPick={openFolder}
-        needsReconnect={needsReconnect}
-        folderName={folderName}
-        onReconnect={reconnect}
-        pickerError={pickerError}
-      />
-    )
-  }
-
   const navigate = (page, file = null) => {
+    if (file) {
+      setNewFilePaths((prev) => {
+        if (!prev.has(file)) return prev
+        const next = new Set(prev)
+        next.delete(file)
+        return next
+      })
+    }
     setActivePage(page)
     setActiveFile(file)
+  }
+
+  const markFileSeen = (path) => {
+    if (!path) return
+    setNewFilePaths((prev) => {
+      if (!prev.has(path)) return prev
+      const next = new Set(prev)
+      next.delete(path)
+      return next
+    })
   }
 
   const refreshDashboard = () => {
@@ -136,6 +224,37 @@ export default function App() {
   const refreshTasks = () => {
     setTasksVersion((value) => value + 1)
   }
+
+  useEffect(() => {
+    const handleTasksChanged = () => refreshTasks()
+    if (typeof window !== 'undefined') {
+      window.addEventListener(TASKS_INDEX_CHANGED_EVENT, handleTasksChanged)
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(TASKS_INDEX_CHANGED_EVENT, handleTasksChanged)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleToast = (event) => {
+      const message = String(event?.detail?.message || '').trim()
+      if (!message) return
+      setToastMessage(message)
+      window.clearTimeout(window.__memostackToastTimer)
+      window.__memostackToastTimer = window.setTimeout(() => setToastMessage(''), 2000)
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('memostack:toast', handleToast)
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('memostack:toast', handleToast)
+      }
+    }
+  }, [])
 
   const refreshTree = () => {
     listTree()
@@ -175,16 +294,106 @@ export default function App() {
     if (typeof deleteFile === 'function') {
       await deleteFile(path)
     }
+    if (path.startsWith('inbox/')) {
+      await clearProcessedState(path)
+    }
+    await invalidateFileIndex()
+    if (activeFile === path) {
+      setActiveFile(null)
+      setActivePage('command')
+    }
     refreshTree()
   }
 
   const deleteVaultFile = async (path) => {
     if (!path || typeof deleteFile !== 'function') return
     await deleteFile(path)
+    if (path.startsWith('inbox/')) {
+      await clearProcessedState(path)
+    }
+    await invalidateFileIndex()
+    setNewFilePaths((prev) => {
+      if (!prev.has(path)) return prev
+      const next = new Set(prev)
+      next.delete(path)
+      return next
+    })
+
+    if (path.startsWith('inbox/')) {
+      setInboxSessionKey((value) => value + 1)
+    }
+
+    if (activeFile === path) {
+      setActiveFile(null)
+      setActivePage('command')
+    }
+
     refreshTree()
   }
 
-  const handleCreateFile = async (folder) => {
+  const handleSidebarRename = async (oldPath, newName) => {
+    if (!newName?.trim()) return
+    const folder = oldPath.split('/')[0]
+    const oldStem = oldPath.split('/').pop().replace(/\.md$/i, '')
+    const newSlug = toSlug(newName.trim())
+    if (!newSlug || newSlug === oldStem) return
+
+    const newPath = `${folder}/${newSlug}.md`
+
+    try {
+      const exists = await fileExists(newPath)
+      if (exists) return
+
+      const raw = await readFile(oldPath)
+      let newContent = raw
+
+      if (folder === 'notes') {
+        const lines = raw.split('\n')
+        const firstNonEmpty = lines.findIndex((l) => l.trim().length > 0)
+        if (firstNonEmpty >= 0 && /^#\s+/.test(lines[firstNonEmpty])) {
+          lines[firstNonEmpty] = `# ${newName.trim()}`
+          newContent = lines.join('\n')
+        }
+      } else if (folder === 'people') {
+        const { fields, body } = parseFrontmatter(raw)
+        fields.full_name = newName.trim()
+        newContent = buildFileContent(fields, body)
+      } else if (folder === 'projects') {
+        const { fields, body } = parseFrontmatter(raw)
+        fields.name = newName.trim()
+        newContent = buildFileContent(fields, body)
+      }
+
+      await writeFile(newPath, newContent)
+      await deleteFile(oldPath)
+
+      if (folder === 'people' || folder === 'projects') {
+        await retargetTasksForFile(readFile, writeFile, oldPath, newPath)
+        for (const ctxPath of [
+          'context/_context.md',
+          'context/_context_log.md',
+          'context/projects-index.md',
+          'context/people-index.md',
+          'context/ideas-index.md',
+        ]) {
+          try {
+            const txt = await readFile(ctxPath)
+            if (txt.includes(oldPath)) {
+              await writeFile(ctxPath, txt.split(oldPath).join(newPath))
+            }
+          } catch {}
+        }
+        await invalidateFileIndex()
+      }
+
+      if (activeFile === oldPath) setActiveFile(newPath)
+      refreshTree()
+    } catch (err) {
+      console.error('Sidebar rename failed:', err?.message || err)
+    }
+  }
+
+  const handleCreateFile = async (folder, customName) => {
     const date = new Date()
     const yyyy = date.getFullYear()
     const mm = String(date.getMonth() + 1).padStart(2, '0')
@@ -200,8 +409,13 @@ export default function App() {
 
     switch (folder) {
       case 'notes':
-        filePath = `${folder}/Untitled-${tsWithTime}.md`
-        content = '# Untitled\n\n'
+        if (customName) {
+          const slug = customName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+          filePath = `${folder}/${slug || `untitled-${tsWithTime}`}.md`
+        } else {
+          filePath = `${folder}/Untitled-${tsWithTime}.md`
+        }
+        content = customName ? `# ${customName.trim()}\n\n` : '# Untitled\n\n'
         break
       case 'projects': {
         const generated = generateFile(folder, '')
@@ -225,9 +439,11 @@ export default function App() {
         filePath = todayInboxPath()
         const exists = await fileExists(filePath)
         if (!exists) {
+          await clearProcessedState(filePath)
           await writeFile(filePath, dailyNoteTemplate(filePath.replace('inbox/', '').replace('.md', '')))
         }
         refreshTree()
+        setInboxSessionKey((value) => value + 1)
         navigate('inbox', filePath)
         return
       }
@@ -239,6 +455,10 @@ export default function App() {
     }
 
     await writeFile(filePath, content)
+    if (folder === 'people') {
+      await restoreTasksForRecreatedPerson(readFile, writeFile, filePath)
+    }
+    await invalidateFileIndex()
     refreshTree()
 
     if (folder === 'inbox') {
@@ -247,6 +467,32 @@ export default function App() {
     }
 
     navigate('viewer', filePath)
+  }
+
+  const handleWikilinkClick = (name) => {
+    const target = resolveWikilinkTarget(name, tree)
+    if (target) {
+      navigate('viewer', target)
+      return
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('memostack:toast', {
+        detail: { message: `Could not resolve [[${String(name || '').trim()}]]` },
+      }))
+    }
+  }
+
+  if (!vaultReady) {
+    return (
+      <VaultPicker
+        onPick={openFolder}
+        needsReconnect={needsReconnect}
+        folderName={folderName}
+        onReconnect={reconnect}
+        pickerError={pickerError}
+      />
+    )
   }
 
   return (
@@ -266,6 +512,9 @@ export default function App() {
         onDeleteFile={deleteVaultFile}
         onConfirmAction={showConfirm}
         settings={settings}
+        newFilePaths={newFilePaths}
+        onMarkFileSeen={markFileSeen}
+        onRenameFile={handleSidebarRename}
       />
       <main className="flex-1 overflow-auto" style={{ background: 'var(--bg-primary)' }}>
         {activePage === 'command'  && (
@@ -291,6 +540,7 @@ export default function App() {
         {activePage === 'inbox'    && (
           <Suspense fallback={<PageLoading />}> 
             <InboxPage
+              key={`${activeFile || 'today'}:${inboxSessionKey}`}
               file={activeFile}
               readFile={readFile}
               writeFile={writeFile}
@@ -300,11 +550,25 @@ export default function App() {
                 refreshTree()
                 refreshTasks()
               }}
+              onProcessedState={async (payload) => {
+                refreshTree()
+                const createdPaths = Array.isArray(payload?.createdPaths)
+                  ? payload.createdPaths.filter(Boolean)
+                  : []
+                if (createdPaths.length > 0) {
+                  setNewFilePaths((prev) => {
+                    const next = new Set(prev)
+                    createdPaths.forEach((path) => next.add(path))
+                    return next
+                  })
+                }
+              }}
               onArchiveFile={archiveFile}
               onDeleteFile={deleteVaultFile}
               onConfirmAction={showConfirm}
               listTree={listTree}
               settings={settings}
+              onWikilinkClick={handleWikilinkClick}
               setPage={(page, file) => navigate(page, file)}
             />
           </Suspense>
@@ -326,7 +590,15 @@ export default function App() {
               readFile={readFile}
               writeFile={writeFile}
               deleteFile={deleteFile}
+              renameFile={renameFile}
+              fileExists={fileExists}
               onConfirmAction={showConfirm}
+              onWikilinkClick={handleWikilinkClick}
+              wikilinkSuggestions={wikilinkSuggestions}
+              onFileRenamed={(newPath) => {
+                refreshTree()
+                setActiveFile(newPath)
+              }}
               onFileDeleted={() => {
                 refreshTree()
                 setActiveFile(null)
@@ -341,12 +613,18 @@ export default function App() {
               filePath={activeFile}
               readFile={readFile}
               writeFile={writeFile}
+              listTree={listTree}
               deleteFile={deleteFile}
               renameFile={renameFile}
               fileExists={fileExists}
               tasksVersion={tasksVersion}
+              settings={settings}
+              wikilinkSuggestions={wikilinkSuggestions}
+              onNavigate={navigate}
+              onTasksChanged={refreshTasks}
               onFileRenamed={handleFileRenamed}
               onConfirmAction={showConfirm}
+              onWikilinkClick={handleWikilinkClick}
               onFileDeleted={() => {
                 refreshTree()
                 setActiveFile(null)
@@ -361,12 +639,17 @@ export default function App() {
               filePath={activeFile}
               readFile={readFile}
               writeFile={writeFile}
+              listTree={listTree}
               deleteFile={deleteFile}
               renameFile={renameFile}
               fileExists={fileExists}
               tasksVersion={tasksVersion}
+              wikilinkSuggestions={wikilinkSuggestions}
+              onNavigate={navigate}
+              onTasksChanged={refreshTasks}
               onFileRenamed={handleFileRenamed}
               onConfirmAction={showConfirm}
+              onWikilinkClick={handleWikilinkClick}
               onFileDeleted={() => {
                 refreshTree()
                 setActiveFile(null)
@@ -385,6 +668,7 @@ export default function App() {
               onArchiveFile={archiveFile}
               onDeleteFile={deleteVaultFile}
               onConfirmAction={showConfirm}
+              onWikilinkClick={handleWikilinkClick}
               onFileDeleted={() => {
                 refreshTree()
                 setActiveFile(null)
@@ -420,6 +704,25 @@ export default function App() {
         }}
         onCancel={hideConfirm}
       />
+      {toastMessage ? (
+        <div
+          style={{
+            position: 'fixed',
+            right: 18,
+            bottom: 18,
+            zIndex: 1200,
+            padding: '10px 12px',
+            borderRadius: 8,
+            border: '1px solid var(--border-strong)',
+            background: 'var(--panel-pop)',
+            color: 'var(--text)',
+            fontSize: 12.5,
+            boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
+          }}
+        >
+          {toastMessage}
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useMarkdownEditor } from '../hooks/useMarkdownEditor.jsx'
 
-export default function NotesPage({ readFile, writeFile, listTree, activePath }) {
+export default function NotesPage({ readFile, writeFile, listTree, activePath, onWikilinkClick }) {
   const [filePath, setFilePath] = useState(null)
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(true)
@@ -125,7 +125,7 @@ export default function NotesPage({ readFile, writeFile, listTree, activePath })
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-8 py-6 milkdown-wrapper">
-          <EditorComponent key={filePath} initialValue={content} onChange={handleChange} />
+          <EditorComponent key={filePath} initialValue={content} onChange={handleChange} onWikilinkClick={onWikilinkClick} />
         </div>
       </div>
     </div>

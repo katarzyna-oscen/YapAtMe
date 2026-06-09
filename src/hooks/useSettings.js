@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   apiKey:   '',
   model:    'meta-llama/llama-3.3-70b-instruct',
   provider: 'openrouter',
+  writerFile: '',
   enabledModules: {
     projects: true,
     people: true,

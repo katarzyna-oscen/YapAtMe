@@ -35,6 +35,8 @@ export default function TrashMenuButton({
   onArchive,
   onDelete,
   showArchive = true,
+  confirmArchive = true,
+  confirmDelete = true,
   getArchiveConfirm,
   getDeleteConfirm,
 }) {
@@ -54,6 +56,10 @@ export default function TrashMenuButton({
 
   const handleArchive = () => {
     setOpen(false)
+    if (!confirmArchive) {
+      onArchive?.()
+      return
+    }
     const payload = getArchiveConfirm
       ? getArchiveConfirm(label)
       : {
@@ -71,6 +77,10 @@ export default function TrashMenuButton({
 
   const handleDelete = () => {
     setOpen(false)
+    if (!confirmDelete) {
+      onDelete?.()
+      return
+    }
     const payload = getDeleteConfirm
       ? getDeleteConfirm(label)
       : {

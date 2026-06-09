@@ -1,4 +1,4 @@
-import { appendToSection } from './vaultWriter'
+import { appendToSection, prependToSection } from './vaultWriter'
 import { appendTaskEntry } from './tasksIndex'
 import { generateFile } from './templates'
 
@@ -11,6 +11,7 @@ const TASK_SECTIONS = new Set([
   '## Decisions',
   '## Delegate',
   '## Talk About',
+  '## My Actions',
 ])
 
 function normalizeTaskTitle(raw) {
@@ -39,25 +40,112 @@ function isTaskChange(change) {
   return ['action', 'urgent', 'important', 'follow-up', 'delegate'].includes(marker)
 }
 
-export async function applyChange(readFile, writeFile, change) {
-  if (!change?.target_file || !change?.target_section || !change?.content) return
+function formatMentionLine(content, noteFilename) {
+  const raw = String(content || '').trim()
+
+  if (/^\[\[\d{2}-\d{2}-\d{4}\]\]\s+—\s+.+/.test(raw)) return raw
+
+  const noteDateSlug = String(noteFilename || '').replace('inbox/', '').replace('.md', '').trim() || 'unknown-date'
+  const stripped = raw
+    .replace(/^\[\[\d{2}-\d{2}-\d{4}\]\]\s*[—-]\s*/i, '')
+    .replace(/^\d{2}-\d{2}-\d{4}\s*[—-]\s*/i, '')
+    .replace(/\.\s*Source:\s*\S+\s*$/i, '')
+    .trim()
+
+  const summary = stripped || 'Mentioned in note'
+  return `[[${noteDateSlug}]] — ${summary}\n`
+}
+
+function normalizeMentionForCompare(line) {
+  return String(line || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\[\[|\]\]/g, '')
+    .trim()
+}
+
+function normalizeChangeForModules(change, { peopleModuleEnabled = true, writerFile = '' } = {}) {
+  const marker = String(change?.marker || '').toLowerCase()
+  const targetFile = String(change?.target_file || '')
+  const normalizedWriterFile = String(writerFile || '').trim().toLowerCase()
+  const isWriterTarget = normalizedWriterFile && targetFile.toLowerCase() === normalizedWriterFile
+
+  if (isWriterTarget) return change
+  if (peopleModuleEnabled) return change
+
+  if (marker === 'mention') {
+    return null
+  }
+
+  if (marker === 'follow-up' || marker === 'delegate') {
+    return {
+      ...change,
+      marker: 'action',
+      target_section: '## Open Actions',
+      target_file: null,
+      module: 'unattached',
+    }
+  }
+
+  return change
+}
+
+export async function applyChange(readFile, writeFile, change, noteFilename, options = {}) {
+  const normalized = normalizeChangeForModules(change, options)
+  if (!normalized) return
+  change = normalized
+
+  if (!change?.target_section || !change?.content) return
 
   // Auto-create entity file if it doesn't exist yet (e.g. task approved before entity created).
-  try {
-    await readFile(change.target_file)
-  } catch {
-    const folder = String(change.target_file).split('/')[0]
-    const filename = String(change.target_file).split('/').pop().replace(/\.md$/i, '')
-    // Restore display name: slug is lowercase-hyphenated, capitalise first letter.
-    const displayName = filename.charAt(0).toUpperCase() + filename.slice(1).replace(/-/g, ' ')
-    const generated = generateFile(folder, displayName)
-    if (generated?.content) {
-      await writeFile(change.target_file, generated.content)
+  if (change?.target_file) {
+    try {
+      await readFile(change.target_file)
+    } catch {
+      const folder = String(change.target_file).split('/')[0]
+      const filename = String(change.target_file).split('/').pop().replace(/\.md$/i, '')
+      // Restore display name: slug is lowercase-hyphenated, capitalise first letter.
+      const displayName = filename.charAt(0).toUpperCase() + filename.slice(1).replace(/-/g, ' ')
+      const generated = generateFile(folder, displayName)
+      if (generated?.content) {
+        await writeFile(change.target_file, generated.content)
+      }
     }
   }
 
   const isTaskSection = TASK_SECTIONS.has(change.target_section)
   const isTask = isTaskSection || isTaskChange(change)
+  const isMention = change.target_section === '## Recent Mentions'
+
+  if (isMention) {
+    const formattedMention = formatMentionLine(change.content, noteFilename || change.noteFilename)
+    const noteDateSlug = String(noteFilename || change.noteFilename || '')
+      .replace('inbox/', '')
+      .replace('.md', '')
+      .trim()
+    let alreadyPresent = false
+    try {
+      const current = await readFile(change.target_file)
+      const normalizedTarget = normalizeMentionForCompare(formattedMention)
+      alreadyPresent = String(current || '')
+        .split('\n')
+        .some((line) => normalizeMentionForCompare(line) === normalizedTarget)
+    } catch {}
+
+    if (!alreadyPresent) {
+    await prependToSection(
+      readFile,
+      writeFile,
+      change.target_file,
+      change.target_section,
+      formattedMention,
+      noteDateSlug
+    )
+    }
+
+    // Mention routing is handled fully above; avoid falling through to generic append.
+    if (!isTask) return
+  }
 
   if (isTask) {
     // Task changes: index only. Never write checkbox lines to markdown.
@@ -71,20 +159,23 @@ export async function applyChange(readFile, writeFile, change) {
     if (/\b(important|high-priority|priority)\b/.test(combinedText) && markerTag !== 'important') inferredTags.push('important')
 
     await appendTaskEntry(readFile, writeFile, {
-      file: change.target_file,
-      module: change.module || change.target_file.split('/')[0],
+      file: change.target_file ?? null,
+      module: change.module || (change.target_file ? change.target_file.split('/')[0] : 'unattached'),
       title: normalizeTaskTitle(rawTitle),
       section: change.target_section,
+      sourceNote: String(noteFilename || change.noteFilename || '').trim() || undefined,
       tags: [...new Set([markerTag, ...extraTags, ...inferredTags])],
     })
-  } else {
-    // Non-task changes (mentions, notes, etc.): markdown only. No index entry.
-    await appendToSection(
-      readFile,
-      writeFile,
-      change.target_file,
-      change.target_section,
-      change.content
-    )
+    return
   }
+
+  if (!change?.target_file) return
+
+  await appendToSection(
+    readFile,
+    writeFile,
+    change.target_file,
+    change.target_section,
+    change.content
+  )
 }

@@ -2,15 +2,16 @@
 // Stores: 'handles' (FileSystemDirectoryHandle), 'settings' (AI config)
 
 const DB_NAME = 'memory-os'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
-function openDB() {
+export function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = e => {
       const db = e.target.result
       if (!db.objectStoreNames.contains('handles'))  db.createObjectStore('handles')
       if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings')
+      if (!db.objectStoreNames.contains('processedNotes')) db.createObjectStore('processedNotes', { keyPath: 'filePath' })
     }
     req.onsuccess = e => resolve(e.target.result)
     req.onerror  = e => reject(e.target.error)

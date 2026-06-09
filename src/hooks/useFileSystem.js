@@ -2,6 +2,24 @@ import { useState, useEffect, useCallback } from 'react'
 import { dbGet, dbPut } from '../lib/db'
 
 const HANDLE_KEY = 'rootDir'
+const TASK_CHECKBOX_CLEANUP_FLAG = 'task-checkbox-cleanup-v1'
+const NOTES_DATE_MIGRATION_FLAG = 'notes-date-filename-migration-v1'
+
+function isUserAgentPermissionError(err) {
+  const name = String(err?.name || '')
+  const msg = String(err?.message || '').toLowerCase()
+  return name === 'NotAllowedError'
+    || msg.includes('not allowed by the user agent')
+    || msg.includes('platform in the current context')
+}
+const TASK_SECTION_HEADERS = new Set([
+  '## Open Actions',
+  '## Delegate',
+  '## Talk About',
+  '## Decisions',
+  '## Delegations',
+  '## My Actions',
+])
 
 // ── Vault shape ─────────────────────────────────────────────────────────────
 
@@ -73,7 +91,14 @@ async function buildTree(dirHandle, basePath = '') {
       const children = await buildTree(handle, path)
       entries.push({ name, kind: 'directory', path, children })
     } else if (handle.kind === 'file' && name.endsWith('.md')) {
-      entries.push({ name, kind: 'file', path })
+      let modified = null
+      try {
+        const file = await handle.getFile()
+        modified = Number.isFinite(file?.lastModified) ? file.lastModified : null
+      } catch {
+        modified = null
+      }
+      entries.push({ name, kind: 'file', path, modified })
     }
   }
   // Directories first, then files; alphabetical within each group
@@ -81,6 +106,33 @@ async function buildTree(dirHandle, basePath = '') {
     if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
     return a.name.localeCompare(b.name)
   })
+}
+
+function stripTaskCheckboxLinesFromEntity(raw) {
+  const lines = String(raw || '').split('\n')
+  const out = []
+  let inTaskSection = false
+  let changed = false
+
+  for (const line of lines) {
+    const headingMatch = String(line || '').match(/^##\s+(.+)$/)
+    if (headingMatch) {
+      const normalizedHeading = `## ${String(headingMatch[1] || '').trim()}`
+      inTaskSection = TASK_SECTION_HEADERS.has(normalizedHeading) && normalizedHeading !== '## Recent Mentions'
+      out.push(line)
+      continue
+    }
+
+    if (inTaskSection && /^\s*-\s*\[[ xX]\]\s+/.test(line)) {
+      changed = true
+      continue
+    }
+
+    out.push(line)
+  }
+
+  const normalized = out.join('\n').replace(/\n{3,}/g, '\n\n')
+  return { changed, content: normalized }
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -127,6 +179,11 @@ export function useFileSystem() {
       setVaultReady(true)
       return handle
     } catch (err) {
+      if (isUserAgentPermissionError(err)) {
+        setPickerError('Folder permission was blocked by the browser context. Open MemoStack in a single localhost tab and choose the folder manually.')
+        setNeedsReconnect(false)
+        return null
+      }
       if (err.name !== 'AbortError') throw err
       return null
     }
@@ -134,8 +191,18 @@ export function useFileSystem() {
 
   const initVaultNow = useCallback(async () => {
     if (!rootHandle) return
-    await initVault(rootHandle)
-    setVaultReady(true)
+    try {
+      await initVault(rootHandle)
+      setVaultReady(true)
+    } catch (err) {
+      if (isUserAgentPermissionError(err)) {
+        setPickerError('Vault access is blocked by browser permissions in this context. Reconnect the folder from this tab.')
+        setNeedsReconnect(true)
+        setVaultReady(false)
+        return
+      }
+      throw err
+    }
   }, [rootHandle])
 
   const reconnect = useCallback(async () => {
@@ -148,9 +215,16 @@ export function useFileSystem() {
         setRootHandle(handle)
         setNeedsReconnect(false)
         setVaultReady(true)
+        setPickerError(null)
         return handle
       }
     } catch (err) {
+      if (isUserAgentPermissionError(err)) {
+        setPickerError('Reconnect was blocked by browser permissions. Use "Choose different folder" and select the vault again.')
+        setNeedsReconnect(true)
+        setVaultReady(false)
+        return null
+      }
       if (err.name !== 'AbortError') throw err
     }
     return null
@@ -241,6 +315,110 @@ export function useFileSystem() {
       return false
     }
   }, [rootHandle, readFile])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const runNotesFilenameMigrationOnce = async () => {
+      if (!vaultReady || !rootHandle) return
+      const alreadyDone = await dbGet('settings', NOTES_DATE_MIGRATION_FLAG).catch(() => false)
+      if (alreadyDone) return
+
+      try {
+        const notesDir = await rootHandle.getDirectoryHandle('notes', { create: true })
+        const renames = []
+
+        for await (const [name, handle] of notesDir.entries()) {
+          if (cancelled) return
+          if (handle.kind !== 'file') continue
+          const m = String(name).match(/^(\d{4})-(\d{2})-(\d{2})\.md$/)
+          if (!m) continue
+          const nextName = `${m[3]}-${m[2]}-${m[1]}.md`
+          if (nextName === name) continue
+
+          try {
+            await notesDir.getFileHandle(nextName)
+            continue
+          } catch {}
+
+          renames.push({ oldName: name, newName: nextName })
+        }
+
+        for (const rename of renames) {
+          if (cancelled) return
+          try {
+            const sourceHandle = await notesDir.getFileHandle(rename.oldName)
+            const sourceFile = await sourceHandle.getFile()
+            const content = await sourceFile.text()
+            const targetHandle = await notesDir.getFileHandle(rename.newName, { create: true })
+            const writable = await targetHandle.createWritable()
+            await writable.write(content)
+            await writable.close()
+            await notesDir.removeEntry(rename.oldName)
+          } catch (err) {
+            console.warn('Notes filename migration skipped for', rename.oldName, err?.message || err)
+          }
+        }
+
+        await dbPut('settings', NOTES_DATE_MIGRATION_FLAG, true)
+      } catch (err) {
+        console.warn('Notes filename migration failed:', err?.message || err)
+      }
+    }
+
+    const runTaskCheckboxCleanupOnce = async () => {
+      if (!vaultReady || !rootHandle) return
+
+      const alreadyDone = await dbGet('settings', TASK_CHECKBOX_CLEANUP_FLAG).catch(() => false)
+      if (alreadyDone) return
+
+      try {
+        const tree = await buildTree(rootHandle)
+        const queue = [...tree]
+        const filePaths = []
+
+        while (queue.length > 0) {
+          const node = queue.shift()
+          if (!node) continue
+          if (node.kind === 'directory') {
+            queue.push(...(node.children || []))
+            continue
+          }
+          if (node.kind !== 'file') continue
+          const path = String(node.path || '')
+          if (!path.endsWith('.md')) continue
+          if (!path.startsWith('people/') && !path.startsWith('projects/')) continue
+          filePaths.push(path)
+        }
+
+        const strippedFiles = []
+        for (const path of filePaths) {
+          if (cancelled) return
+          let raw = ''
+          try {
+            raw = await readFile(path)
+          } catch {
+            continue
+          }
+
+          const { changed, content } = stripTaskCheckboxLinesFromEntity(raw)
+          if (!changed) continue
+          await writeFile(path, content)
+          strippedFiles.push(path)
+        }
+
+        if (strippedFiles.length > 0) {
+          console.log('[Task checkbox cleanup] stripped markdown checkbox lines from:', strippedFiles)
+        }
+        await dbPut('settings', TASK_CHECKBOX_CLEANUP_FLAG, true)
+      } catch (err) {
+        console.warn('Task checkbox cleanup failed:', err?.message || err)
+      }
+    }
+
+    runNotesFilenameMigrationOnce().then(() => runTaskCheckboxCleanupOnce())
+    return () => { cancelled = true }
+  }, [vaultReady, rootHandle, readFile, writeFile])
 
   return {
     rootHandle,

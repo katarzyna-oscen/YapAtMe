@@ -1,4 +1,7 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
+import { disconnectTasksForFile, archiveTasksForFile, deleteTasksForFile, retargetTasksForFile } from '../lib/tasksIndex'
+import { useFileSystem } from '../hooks/useFileSystem'
+import { SecondaryButton } from './ui/Buttons'
 import DotGrid from './DotGrid'
 
 function Icon({ name, size = 14 }) {
@@ -83,26 +86,186 @@ function MenuItem({ label, danger = false, onClick }) {
   )
 }
 
-function SidebarSection({ title, folder, files, defaultOpen = true, addable = false, activePath, onFileClick, onAdd, onArchiveFile, onDeleteFile, onConfirmAction }) {
+function SidebarTaskActionModal({ open, mode, label, onCancel, onSelect }) {
+  if (!open) return null
+
+  const isArchive = mode === 'archive'
+  const title = isArchive
+    ? `Archive "${label}" and handle related tasks`
+    : `Delete "${label}" and handle related tasks`
+
+  const subtitle = isArchive
+    ? 'Choose what should happen to tasks linked to this entity.'
+    : 'Choose how tasks linked to this entity should be handled before deletion.'
+
+  const options = isArchive
+    ? [
+        { key: 'keep', label: 'Keep linked tasks', detail: 'Tasks stay linked to the archived entity file and remain visible.' },
+        { key: 'disconnect', label: 'Disconnect tasks from entity', detail: 'Remove entity link from tasks and keep them visible.' },
+        { key: 'archive_tasks', label: 'Archive all related tasks', detail: 'Hide related tasks from active views but keep them in index.' },
+      ]
+    : [
+        { key: 'disconnect', label: 'Disconnect tasks from entity', detail: 'Remove entity link from tasks and keep them visible.' },
+        { key: 'archive_tasks', label: 'Archive all related tasks', detail: 'Hide related tasks from active views but keep them in index.' },
+        { key: 'delete_tasks', label: 'Delete all related tasks', detail: 'Permanently remove related tasks from the index.' },
+      ]
+
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.55)',
+        backdropFilter: 'blur(2px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: 560,
+          maxWidth: 'calc(100vw - 32px)',
+          background: 'var(--panel)',
+          border: '1px solid var(--border)',
+          borderRadius: 12,
+          boxShadow: '0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.02)',
+          padding: 22,
+          color: 'var(--text)',
+        }}
+      >
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--text)' }}>{title}</h2>
+        <p style={{ margin: '8px 0 16px', fontSize: 13.5, lineHeight: 1.55, color: 'var(--text-dim)' }}>{subtitle}</p>
+
+        <div style={{ display: 'grid', gap: 10 }}>
+          {options.map((option) => (
+            <button
+              key={option.key}
+              onClick={() => onSelect(option.key)}
+              style={{
+                textAlign: 'left',
+                border: '1px solid var(--border)',
+                background: 'var(--panel-2)',
+                color: 'var(--text)',
+                borderRadius: 8,
+                padding: '11px 12px',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+              onMouseEnter={(event) => { event.currentTarget.style.borderColor = 'var(--border-strong)' }}
+              onMouseLeave={(event) => { event.currentTarget.style.borderColor = 'var(--border)' }}
+            >
+              <div style={{ fontSize: 13.5, fontWeight: 600 }}>{option.label}</div>
+              <div style={{ marginTop: 2, fontSize: 12.5, color: 'var(--text-dim)' }}>{option.detail}</div>
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+          <SecondaryButton onClick={onCancel}>Cancel</SecondaryButton>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SidebarSection({ title, folder, files, defaultOpen = true, addable = false, activePath, onFileClick, onAdd, onArchiveFile, onDeleteFile, onConfirmAction, readFile, writeFile, newFilePaths = new Set(), onMarkFileSeen, onRenameFile }) {
   const [open, setOpen] = useState(defaultOpen)
   const [menuState, setMenuState] = useState(null)
   const [hoverPath, setHoverPath] = useState(null)
+  const [taskActionModal, setTaskActionModal] = useState({ open: false, mode: null, path: null })
+  const [pendingNew, setPendingNew] = useState(null) // null = hidden, string = active input value
+  const [renameState, setRenameState] = useState(null) // { path, value } | null
+  const pendingNewInputRef = useRef(null)
+  const renameHandledRef = useRef(false)
 
   const closeMenu = () => setMenuState(null)
   const selectedFile = menuState ? files.find((file) => file.path === menuState.path) : null
 
-  const handleArchive = async (path) => {
-    await onArchiveFile?.(path)
-    closeMenu()
+  const handleArchive = (path) => {
+    const needsTaskDialog = path.startsWith('people/') || path.startsWith('projects/')
+    if (needsTaskDialog) {
+      setTaskActionModal({ open: true, mode: 'archive', path })
+      closeMenu()
+    } else {
+      onConfirmAction?.({
+        title: `Archive "${selectedFile?.name || path}"?`,
+        message: 'This file will be moved to archive/.',
+        confirmLabel: 'Archive',
+        danger: false,
+        onConfirm: () => onArchiveFile?.(path),
+      })
+      closeMenu()
+    }
   }
 
-  const handleDelete = async (path) => {
-    await onDeleteFile?.(path)
-    closeMenu()
+  const handleDelete = (path) => {
+    const needsTaskDialog = path.startsWith('people/') || path.startsWith('projects/')
+    if (needsTaskDialog) {
+      setTaskActionModal({ open: true, mode: 'delete', path })
+      closeMenu()
+    } else {
+      onConfirmAction?.({
+        title: `Delete "${selectedFile?.name || path}"?`,
+        message: 'This file will be permanently removed. This cannot be undone.',
+        confirmLabel: 'Delete',
+        danger: true,
+        onConfirm: () => onDeleteFile?.(path),
+      })
+      closeMenu()
+    }
+  }
+
+  const handleTaskActionSelect = async (action) => {
+    const { mode, path } = taskActionModal
+    setTaskActionModal({ open: false, mode: null, path: null })
+    if (!path) return
+
+    const filename = path.split('/').pop()
+    const entityName = filename?.replace('.md', '').replace(/-/g, ' ') || ''
+    const targetPath = `archive/${filename}`
+
+    try {
+      if (mode === 'archive') {
+        if (action === 'keep') {
+          await retargetTasksForFile(readFile, writeFile, path, targetPath)
+        } else if (action === 'disconnect') {
+          await disconnectTasksForFile(readFile, writeFile, path, [entityName])
+        } else if (action === 'archive_tasks') {
+          await archiveTasksForFile(readFile, writeFile, path)
+        }
+        await onArchiveFile?.(path)
+      } else if (mode === 'delete') {
+        if (action === 'disconnect') {
+          await disconnectTasksForFile(readFile, writeFile, path, [entityName])
+        } else if (action === 'archive_tasks') {
+          await archiveTasksForFile(readFile, writeFile, path)
+        } else if (action === 'delete_tasks') {
+          await deleteTasksForFile(readFile, writeFile, path)
+        }
+        await onDeleteFile?.(path)
+      }
+    } catch (err) {
+      console.error('Sidebar entity action failed:', err?.message || err)
+    }
   }
 
   return (
-    <div style={{ marginBottom: 4 }}>
+    <>
+      <SidebarTaskActionModal
+        open={taskActionModal.open}
+        mode={taskActionModal.mode}
+        label={taskActionModal.path?.split('/').pop()?.replace('.md', '') || ''}
+        onCancel={() => setTaskActionModal({ open: false, mode: null, path: null })}
+        onSelect={handleTaskActionSelect}
+      />
+
+      <div style={{ marginBottom: 4 }}>
       <div
         onClick={() => setOpen((value) => !value)}
         style={{
@@ -138,7 +301,14 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
           <span
             onClick={(event) => {
               event.stopPropagation()
-              onAdd?.(folder)
+              if (folder === 'notes') {
+                setOpen(true)
+                setPendingNew('')
+                // Focus the input on next tick after it renders
+                setTimeout(() => pendingNewInputRef.current?.focus(), 0)
+              } else {
+                onAdd?.(folder)
+              }
             }}
             style={{
               marginLeft: 'auto',
@@ -173,7 +343,46 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
       </div>
 
       {open && (
-        files.length === 0 ? (
+        <>
+          {pendingNew !== null && (
+            <div style={{ padding: '4px 10px 4px 28px' }}>
+              <input
+                ref={pendingNewInputRef}
+                type="text"
+                value={pendingNew}
+                onChange={(e) => setPendingNew(e.target.value)}
+                placeholder="Note title…"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const name = pendingNew.trim()
+                    setPendingNew(null)
+                    if (name) onAdd?.(folder, name)
+                  } else if (e.key === 'Escape') {
+                    setPendingNew(null)
+                  }
+                }}
+                onBlur={() => {
+                  const name = pendingNew?.trim()
+                  setPendingNew(null)
+                  if (name) onAdd?.(folder, name)
+                }}
+                style={{
+                  width: '100%',
+                  background: 'var(--panel-2)',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 5,
+                  padding: '4px 8px',
+                  fontSize: 12.5,
+                  color: 'var(--text)',
+                  outline: 'none',
+                  fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+          )}
+          {files.length === 0 && pendingNew === null ? (
           <div
             style={{
               padding: '4px 10px 4px 28px',
@@ -188,10 +397,15 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
           files.map((file) => {
             const isActive = activePath === file.path
             const isContext = folder === 'context'
+            const isNew = newFilePaths?.has?.(file.path)
             return (
               <div
                 key={file.path}
-                onClick={() => onFileClick(file.path)}
+                onClick={() => {
+                  if (renameState?.path === file.path) return
+                  onMarkFileSeen?.(file.path)
+                  onFileClick(file.path)
+                }}
                 style={{
                   position: 'relative',
                   display: 'flex',
@@ -228,11 +442,86 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
                     flex: 1,
                     minWidth: 0,
                     whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
+                    overflow: 'visible',
+                    textOverflow: 'clip',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 7,
                   }}
                 >
-                  {file.name}
+                  {renameState?.path === file.path ? (
+                    <input
+                      type="text"
+                      value={renameState.value}
+                      onChange={(e) => setRenameState((s) => ({ ...s, value: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          if (renameHandledRef.current) return
+                          renameHandledRef.current = true
+                          const { path, value } = renameState
+                          setRenameState(null)
+                          if (value.trim()) onRenameFile?.(path, value.trim())
+                        } else if (e.key === 'Escape') {
+                          renameHandledRef.current = true
+                          setRenameState(null)
+                        }
+                      }}
+                      onBlur={() => {
+                        if (renameHandledRef.current) { renameHandledRef.current = false; return }
+                        const path = renameState?.path
+                        const name = renameState?.value?.trim()
+                        setRenameState(null)
+                        if (path && name) onRenameFile?.(path, name)
+                      }}
+                      autoFocus
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        background: 'var(--panel-2)',
+                        border: '1px solid var(--border-strong)',
+                        borderRadius: 5,
+                        padding: '2px 6px',
+                        fontSize: 12.5,
+                        color: 'var(--text)',
+                        outline: 'none',
+                        fontFamily: 'inherit',
+                      }}
+                    />
+                  ) : (
+                    <>
+                      <span
+                        style={{
+                          minWidth: 0,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {file.name}
+                      </span>
+                      {isNew && (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            height: 16,
+                            padding: '2px 8px',
+                            borderRadius: 999,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            whiteSpace: 'nowrap',
+                            color: 'oklch(0.84 0.13 150)',
+                            background: 'oklch(0.82 0.13 150 / 0.12)',
+                            border: '1px solid oklch(0.82 0.13 150 / 0.28)',
+                            flexShrink: 0,
+                          }}
+                        >
+                          new
+                        </span>
+                      )}
+                    </>
+                  )}
                 </span>
                 {!isContext && (
                   <div style={{ marginLeft: 'auto', flexShrink: 0 }}>
@@ -281,7 +570,8 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
               </div>
             )
           })
-        )
+        )}
+        </>
       )}
 
       {menuState && selectedFile && (
@@ -304,36 +594,30 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
           }}
           onClick={(event) => event.stopPropagation()}
         >
+          {folder !== 'inbox' && (
+            <MenuItem
+              label="Rename"
+              onClick={() => {
+                renameHandledRef.current = false
+                setRenameState({ path: selectedFile.path, value: selectedFile.name })
+                closeMenu()
+              }}
+            />
+          )}
           <MenuItem
             label="Archive"
-            onClick={() => {
-              closeMenu()
-              onConfirmAction?.({
-                title: `Archive \"${selectedFile.name}\"?`,
-                message: 'This file will be moved to archive/.',
-                confirmLabel: 'Archive',
-                danger: false,
-                onConfirm: () => handleArchive(selectedFile.path),
-              })
-            }}
+            onClick={() => handleArchive(selectedFile.path)}
           />
           <MenuItem
             label="Delete"
             danger
-            onClick={() => {
-              closeMenu()
-              onConfirmAction?.({
-                title: `Delete \"${selectedFile.name}\"?`,
-                message: 'This file will be permanently removed from your vault. This cannot be undone.',
-                confirmLabel: 'Delete',
-                danger: true,
-                onConfirm: () => handleDelete(selectedFile.path),
-              })
-            }}
+            onClick={() => handleDelete(selectedFile.path)}
           />
         </div>
       )}
-    </div>
+
+      </div>
+    </>
   )
 }
 
@@ -347,7 +631,7 @@ function NavItem({ icon, label, active, badge, onClick, onBadgeClick }) {
         gap: 10,
         padding: '8px 10px',
         borderRadius: 7,
-        color: active ? 'var(--text)' : 'var(--text-dim)',
+        color: active ? 'var(--active)' : 'var(--text-dim)',
         background: active ? 'var(--panel-2)' : 'transparent',
         fontWeight: active ? 500 : 400,
         cursor: 'pointer',
@@ -437,8 +721,23 @@ export default function Sidebar({
   onDeleteFile,
   onConfirmAction,
   settings,
+  readFile,
+  writeFile,
+  newFilePaths,
+  onMarkFileSeen,
+  onRenameFile,
 }) {
+  const { readFile: fallbackReadFile, writeFile: fallbackWriteFile } = useFileSystem()
   const enabledModules = settings?.enabledModules ?? { projects: true, people: true, ideas: true }
+  const sidebarReadFile = readFile || fallbackReadFile
+  const sidebarWriteFile = writeFile || fallbackWriteFile
+
+  const parseFilenameDateKey = (file) => {
+    const rawName = String(file?.name || '').replace(/\.md$/i, '')
+    const match = rawName.match(/^(\d{2})-(\d{2})-(\d{4})$/)
+    if (!match) return null
+    return `${match[3]}-${match[2]}-${match[1]}`
+  }
 
   const filesFor = (section) =>
     (tree?.[section] || [])
@@ -447,8 +746,30 @@ export default function Sidebar({
         && !file.name.startsWith('_moved')
         && !(section === 'archive' && file.name === 'tasks.md')
       )
-      .sort((a, b) => b.name.localeCompare(a.name))
-      .map((file) => ({ name: file.name.replace('.md', ''), path: file.path || `${section}/${file.name}` }))
+      .sort((a, b) => {
+        if (section === 'notes' || section === 'inbox') {
+          const aDate = parseFilenameDateKey(a)
+          const bDate = parseFilenameDateKey(b)
+          if (aDate && bDate && aDate !== bDate) return bDate.localeCompare(aDate)
+          if (aDate && !bDate) return -1
+          if (!aDate && bDate) return 1
+
+          const aModified = Number(a?.modified || 0)
+          const bModified = Number(b?.modified || 0)
+          if (aModified !== bModified) return bModified - aModified
+        }
+        return b.name.localeCompare(a.name)
+      })
+      .map((file) => {
+        const stem = file.name.replace(/\.md$/i, '')
+        // Humanize slug: hyphens → spaces, title-case each word
+        // But preserve dashes for date-format stems (DD-MM-YYYY)
+        const isDateStem = /^\d{2}-\d{2}-\d{4}$/.test(stem)
+        const label = isDateStem
+          ? stem
+          : stem.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+        return { name: label, path: file.path || `${section}/${file.name}` }
+      })
 
   return (
     <aside
@@ -515,7 +836,7 @@ export default function Sidebar({
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 8px 16px' }}>
         <SidebarSection title="Inbox" folder="inbox" addable files={filesFor('inbox')} activePath={activePath} onFileClick={(path) => onNavigate('inbox', path)} onAdd={onCreateFile} onArchiveFile={onArchiveFile} onDeleteFile={onDeleteFile} onConfirmAction={onConfirmAction} />
-        <SidebarSection title="Notes" folder="notes" addable files={filesFor('notes')} activePath={activePath} onFileClick={(path) => onNavigate('viewer', path)} onAdd={onCreateFile} onArchiveFile={onArchiveFile} onDeleteFile={onDeleteFile} onConfirmAction={onConfirmAction} />
+        <SidebarSection title="Notes" folder="notes" addable files={filesFor('notes')} activePath={activePath} onFileClick={(path) => onNavigate('viewer', path)} onAdd={onCreateFile} onArchiveFile={onArchiveFile} onDeleteFile={onDeleteFile} onConfirmAction={onConfirmAction} newFilePaths={newFilePaths} onMarkFileSeen={onMarkFileSeen} onRenameFile={onRenameFile} />
         {enabledModules.projects && (
           <SidebarSection
             title="Projects"
@@ -529,6 +850,11 @@ export default function Sidebar({
             onArchiveFile={onArchiveFile}
             onDeleteFile={onDeleteFile}
             onConfirmAction={onConfirmAction}
+            readFile={sidebarReadFile}
+            writeFile={sidebarWriteFile}
+            newFilePaths={newFilePaths}
+            onMarkFileSeen={onMarkFileSeen}
+            onRenameFile={onRenameFile}
           />
         )}
         {enabledModules.people && (
@@ -544,6 +870,11 @@ export default function Sidebar({
             onArchiveFile={onArchiveFile}
             onDeleteFile={onDeleteFile}
             onConfirmAction={onConfirmAction}
+            readFile={sidebarReadFile}
+            writeFile={sidebarWriteFile}
+            newFilePaths={newFilePaths}
+            onMarkFileSeen={onMarkFileSeen}
+            onRenameFile={onRenameFile}
           />
         )}
         {enabledModules.ideas && (
@@ -559,6 +890,7 @@ export default function Sidebar({
             onArchiveFile={onArchiveFile}
             onDeleteFile={onDeleteFile}
             onConfirmAction={onConfirmAction}
+            onRenameFile={onRenameFile}
           />
         )}
         <SidebarSection

@@ -17,6 +17,12 @@
 // Storage: context/tasks-index.json in the vault
 
 export const TASKS_INDEX_PATH = 'context/tasks-index.json'
+export const TASKS_INDEX_CHANGED_EVENT = 'memostack:tasks-index-changed'
+
+export function notifyTasksIndexChanged() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(TASKS_INDEX_CHANGED_EVENT))
+}
 
 export async function readTasksIndex(readFile) {
   try {
@@ -29,13 +35,29 @@ export async function readTasksIndex(readFile) {
 
 export async function writeTasksIndex(writeFile, entries) {
   await writeFile(TASKS_INDEX_PATH, JSON.stringify(entries, null, 2))
+  notifyTasksIndexChanged()
 }
 
 export async function appendTaskEntry(readFile, writeFile, entry) {
   const existing = await readTasksIndex(readFile)
+  const candidateTitle = String(entry?.title || '').trim().toLowerCase()
+  const candidateFile = String(entry?.file || '').trim().toLowerCase()
+  const candidateSource = String(entry?.sourceNote || '').trim().toLowerCase()
+
+  if (candidateTitle && candidateFile && candidateSource) {
+    const duplicate = existing.find((task) => {
+      const taskTitle = String(task?.title || '').trim().toLowerCase()
+      const taskFile = String(task?.file || '').trim().toLowerCase()
+      const taskSource = String(task?.sourceNote || '').trim().toLowerCase()
+      return taskTitle === candidateTitle && taskFile === candidateFile && taskSource === candidateSource
+    })
+    if (duplicate) return
+  }
+
   const newEntry = {
     ...entry,
     id: entry.id ?? crypto.randomUUID(),
+    sourceNote: entry?.sourceNote ? String(entry.sourceNote) : undefined,
     status: 'open',
     last_updated: new Date().toISOString().split('T')[0],
   }
@@ -71,6 +93,165 @@ export async function unresolveTaskEntry(readFile, writeFile, entryId) {
     return {
       ...rest,
       status: 'open',
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+function cleanEntityWikilinks(text, aliases = []) {
+  let out = String(text || '')
+  for (const alias of aliases) {
+    const safe = String(alias || '').trim()
+    if (!safe) continue
+    const escaped = safe.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const direct = new RegExp(`\\[\\[\\s*${escaped}\\s*\\]\\]`, 'gi')
+    const piped = new RegExp(`\\[\\[\\s*${escaped}\\s*\\|\\s*([^\\]]+?)\\s*\\]\\]`, 'gi')
+    out = out.replace(piped, '$1').replace(direct, safe)
+  }
+  return out
+}
+
+export async function retargetTasksForFile(readFile, writeFile, filePath, nextFilePath) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry.file !== filePath) return entry
+    return {
+      ...entry,
+      file: nextFilePath,
+      module: String(nextFilePath || '').split('/')[0] || entry.module,
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+export async function disconnectTasksForFile(readFile, writeFile, filePath, aliases = []) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry.file !== filePath) return entry
+    return {
+      ...entry,
+      file: 'context/tasks-index.json',
+      module: 'tasks',
+      title: cleanEntityWikilinks(entry.title, aliases),
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+export async function archiveTasksForFile(readFile, writeFile, filePath) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry.file !== filePath) return entry
+    return {
+      ...entry,
+      archived_from_status: entry.status,
+      status: 'archived',
+      archived_at: today,
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+export async function deleteTasksForFile(readFile, writeFile, filePath) {
+  const existing = await readTasksIndex(readFile)
+  await writeTasksIndex(writeFile, existing.filter((entry) => entry.file !== filePath))
+}
+
+function restoreArchivedStatus(entry) {
+  if (entry.status !== 'archived') return entry
+  const nextStatus = entry.archived_from_status || 'open'
+  const { archived_at, archived_from_status, ...rest } = entry
+  return {
+    ...rest,
+    status: nextStatus,
+  }
+}
+
+export async function restoreTasksForRecreatedPerson(readFile, writeFile, personFilePath) {
+  const existing = await readTasksIndex(readFile)
+  const personFilename = String(personFilePath || '').split('/').pop() || ''
+  const archivePath = `archive/${personFilename}`
+  const today = new Date().toISOString().slice(0, 10)
+
+  const updated = existing.map((entry) => {
+    const pointsToArchiveFile = entry.file === archivePath
+    const pointsToPersonFile = entry.file === personFilePath
+    if (!pointsToArchiveFile && !pointsToPersonFile) return entry
+
+    const restored = restoreArchivedStatus(entry)
+    return {
+      ...restored,
+      file: personFilePath,
+      module: 'people',
+      last_updated: today,
+    }
+  })
+
+  await writeTasksIndex(writeFile, updated)
+}
+
+// ── Module-level operations ───────────────────────────────────────────────
+
+export function countActiveTasksForModule(entries, moduleId) {
+  return (entries || []).filter(
+    (e) => e?.module === moduleId && e?.status === 'open'
+  ).length
+}
+
+export function countArchivedTasksForModule(entries, moduleId) {
+  return (entries || []).filter(
+    (e) => e?.module === moduleId && e?.status === 'archived'
+  ).length
+}
+
+export async function archiveTasksForModule(readFile, writeFile, moduleId) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry?.module !== moduleId || entry?.status !== 'open') return entry
+    return {
+      ...entry,
+      archived_from_status: 'open',
+      status: 'archived',
+      archived_at: today,
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+export async function unattachTasksForModule(readFile, writeFile, moduleId) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry?.module !== moduleId || entry?.status !== 'open') return entry
+    return {
+      ...entry,
+      file: null,
+      module: 'unattached',
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
+export async function restoreArchivedTasksForModule(readFile, writeFile, moduleId) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry?.module !== moduleId || entry?.status !== 'archived') return entry
+    const nextStatus = entry.archived_from_status || 'open'
+    const { archived_at, archived_from_status, ...rest } = entry
+    return {
+      ...rest,
+      status: nextStatus,
       last_updated: today,
     }
   })

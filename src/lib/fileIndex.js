@@ -1,7 +1,7 @@
 import { get, set } from 'idb-keyval'
 
 const CACHE_KEY = 'memostack:fileIndex'
-const CACHE_VERSION = 1
+const CACHE_VERSION = 2
 
 export async function getFileIndex(listTree, buildAllowedFiles, forceRefresh = false) {
   if (!forceRefresh) {

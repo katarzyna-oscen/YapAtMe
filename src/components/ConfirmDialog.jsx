@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { PrimaryButton, SecondaryButton } from './ui/Buttons'
 
 export default function ConfirmDialog({
   open,
@@ -88,54 +89,12 @@ export default function ConfirmDialog({
         </p>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button
-            onClick={onCancel}
-            style={{
-              padding: '8px 14px',
-              background: 'transparent',
-              color: 'var(--text-dim)',
-              border: '1px solid var(--border)',
-              borderRadius: 7,
-              fontSize: 13,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(event) => {
-              event.currentTarget.style.background = 'var(--panel-2)'
-              event.currentTarget.style.color = 'var(--text)'
-            }}
-            onMouseLeave={(event) => {
-              event.currentTarget.style.background = 'transparent'
-              event.currentTarget.style.color = 'var(--text-dim)'
-            }}
-          >
+          <SecondaryButton onClick={onCancel}>
             {cancelLabel}
-          </button>
-          <button
-            onClick={onConfirm}
-            autoFocus
-            style={{
-              padding: '8px 14px',
-              background: danger ? `oklch(0.62 0.20 ${hue})` : `oklch(0.62 0.16 ${hue})`,
-              color: '#fff',
-              border: '1px solid transparent',
-              borderRadius: 7,
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-            onMouseEnter={(event) => {
-              event.currentTarget.style.background = `oklch(0.66 0.20 ${hue})`
-            }}
-            onMouseLeave={(event) => {
-              event.currentTarget.style.background = danger
-                ? `oklch(0.62 0.20 ${hue})`
-                : `oklch(0.62 0.16 ${hue})`
-            }}
-          >
+          </SecondaryButton>
+          <PrimaryButton onClick={onConfirm}>
             {confirmLabel}
-          </button>
+          </PrimaryButton>
         </div>
       </div>
     </div>,

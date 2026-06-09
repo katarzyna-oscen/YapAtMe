@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { callLLM } from '../lib/llm'
 import { MODULE_REGISTRY } from '../lib/modules'
-import { toSlug } from '../lib/templates'
+import { toSlug, WRITER_ACTIONS_SECTION } from '../lib/templates'
 import { autoLinkKnownMentions } from '../lib/wikilinks'
 
 const MARKER_SYNONYMS = {
@@ -76,67 +76,149 @@ function resolveTargetSection(moduleDef, marker, fallbackSection) {
   return rules[0].targetSection || '## Notes'
 }
 
-function buildSystemPrompt(allowedFiles, enabledModules = {}) {
-  const activeModules = MODULE_REGISTRY.filter((moduleDef) => enabledModules[moduleDef.id] !== false)
-  const moduleList = activeModules.map((moduleDef) => `${moduleDef.id}: folder=${moduleDef.vaultFolder}`).join(', ')
+function buildEntityReferenceBlock(allowedFiles) {
+  const peopleRefs = (allowedFiles || [])
+    .filter((path) => String(path).toLowerCase().startsWith('people/') && String(path).toLowerCase().endsWith('.md'))
+    .map((path) => `- ${humanizeEntityName(path)} → ${path}`)
+  const projectRefs = (allowedFiles || [])
+    .filter((path) => String(path).toLowerCase().startsWith('projects/') && String(path).toLowerCase().endsWith('.md'))
+    .map((path) => `- ${humanizeEntityName(path)} → ${path}`)
+  return `Known people:\n${peopleRefs.length ? peopleRefs.join('\n') : '- (none)'}\n\nKnown projects:\n${projectRefs.length ? projectRefs.join('\n') : '- (none)'}`
+}
 
-  return `You route note fragments into a personal knowledge vault.
+function buildMentionSystemPrompt(allowedFiles) {
+  const entityReferenceBlock = buildEntityReferenceBlock(allowedFiles)
+  return `You extract entity mentions from a daily note.
 
-Return STRICT JSON with shape:
+The first line of every inbox note is a date heading formatted as # DD-MM-YYYY.
+Always preserve it exactly as-is on its own line, separated from the note body by a blank line.
+Never merge the heading with the body text.
+Never append body content to the heading line.
+
+For every person or project referenced by wikilink ([[Name]]), emit one mention change.
+One mention per entity per note — never more.
+
+Return STRICT JSON only:
 {
-  "annotated_note": "string",
   "changes": [
     {
-      "target_file": "projects/example.md",
-      "target_section": "## Open Actions",
-      "content": "- [ ] task text",
-      "marker": "action",
-      "title": "task text",
-      "module": "projects"
+      "target_file": "people/Name.md | projects/Name.md",
+      "target_section": "## Recent Mentions",
+      "content": "[[DD-MM-YYYY]] — [one concise sentence summary]",
+      "marker": "mention",
+      "title": "[short label]",
+      "module": "people | projects"
     }
-  ],
-  "unknown_entities": [
-    {"type": "project|person|idea", "name": "string"}
   ]
 }
 
-Only use target files from this allow list:
+${entityReferenceBlock}
+
+Valid write targets:
 ${allowedFiles.length ? allowedFiles.join('\n') : '(none)'}
 
-Active modules:
-${moduleList || '(none)'}
-
 Rules:
-- Use only the content of the current note. Do not use or infer facts from any other vault note, context summary, or prior responses.
-- You may match names mentioned in the current note against filenames from the allow list, but only to detect whether an existing person/project/idea file already exists. Do not infer any file contents.
-- If the note is empty or has no actionable content, return the note unchanged with an empty changes array and empty unknown_entities.
-- Keep annotated_note as markdown.
-- Keep changes concise and specific.
-- For changes targeting "## Recent Mentions": content must follow this exact format:
-  "DD-MM-YYYY — [one sentence describing what was discussed, decided, or referenced]. Source: [noteFilename]"
-  Extract the date from the note filename (inbox/YYYY-MM-DD.md) and reformat it as DD-MM-YYYY. Never return just a date with no sentence after the dash.
-- Use marker values that match intent: action, decision, mention, delegate, follow-up, urgent, important.
-- If text explicitly says urgent/important/ASAP, preserve that in marker (urgent or important), not plain action.
-- target_section must be one of the standard sections for the target module/file. Never invent headings.
-- For people files: use marker=follow-up when you want to discuss, talk about, or check in with the person. Use marker=delegate when you are assigning a task *to* that person for them to do.
-- If a file does not exist, return it as unknown_entities instead of inventing a file.
+- Only emit a mention if the entity's file appears in Valid write targets.
+- One mention per wikilinked entity — do not repeat.
+- Mention format — content field must be exactly: [[DD-MM-YYYY]] — [one concise sentence summary]
+- Where DD-MM-YYYY is today's note date.
+- No Source tag and no extra fields.
+- Example: [[28-05-2026]] — Approved expense report and laptop order; discussed Friday workshop.
+- Entity names containing dots must be preserved verbatim inside wikilinks (example: [[Ubuntu.]]).
+- Do not emit tasks, decisions, or any other change type.
+- Return { "changes": [] } if there is nothing to mention.
 `
 }
 
-function buildUserPrompt({ noteContent, noteFilename }) {
-  return `Current note file: ${noteFilename}\n\nCurrent note markdown:\n${noteContent}`
+function buildTaskSystemPrompt(allowedFiles) {
+  const entityReferenceBlock = buildEntityReferenceBlock(allowedFiles)
+  return `You extract actionable tasks from a daily note.
+
+The first line of every inbox note is a date heading formatted as # DD-MM-YYYY.
+Always preserve it exactly as-is on its own line, separated from the note body by a blank line.
+Never merge the heading with the body text.
+Never append body content to the heading line.
+
+Return STRICT JSON only:
+{
+  "changes": [
+    {
+      "target_file": "people/Name.md",
+      "target_section": "## Talk About",
+      "content": "- [ ] [task title]",
+      "marker": "follow-up",
+      "title": "[task title]",
+      "module": "people"
+    }
+  ]
+}
+
+${entityReferenceBlock}
+
+Valid write targets:
+${allowedFiles.length ? allowedFiles.join('\n') : '(none)'}
+
+Rules:
+- Extract every actionable item from the note — do not skip any sentence.
+- Generate task changes for ALL actionable sentences, regardless of whether the mentioned person or entity exists in the vault or has a file in the allowed list.
+- One task per actionable item. Never duplicate the same task across multiple people.
+- Each task has exactly one owner — the person who must act or decide.
+  Do not fan out one task to every person mentioned in a sentence.
+  Example: "Diana questioned whether Lyubo should attend" → one follow-up on Diana.md only.
+- If a sentence contains a clear action, follow-up, or delegation involving a person who is NOT in the vault, generate the change with target_file: null and module: "unattached". Do not skip the sentence.
+- You do not require [[wikilink]] syntax to identify actionable content. Plain text person names are sufficient to extract a task.
+- Task title: concise imperative phrase, 10 words max, no raw sentences copied from the note.
+- First-person pending items are tasks even when no person is named as owner:
+  "I'm waiting on reimbursement" → action task on the relevant person's file
+  "I need to..." → action task
+  "To be decided" → decision task
+- Markers (mutually exclusive per item — pick one):
+  action    = the writer must do something
+  follow-up = the writer needs to raise something with a specific person
+  delegate  = another person must do or decide something
+  decision  = a decision is pending
+- Do not include "- [ ]" in task content. Return plain task text in content and title.
+- Sections by marker:
+  follow-up → ## Talk About
+  delegate  → ## Delegate
+  action    → ## Open Actions (projects) or ## Talk About (people)
+  decision  → ## Decisions
+- Few-shot example:
+  Input: "I need to talk with Sophie about weather in Berlin."
+  Output:
+  {
+    "target_file": null,
+    "target_section": "## Open Actions",
+    "content": "Talk with Sophie about Berlin weather",
+    "marker": "action",
+    "title": "Talk with Sophie about Berlin weather",
+    "module": "unattached"
+  }
+- Only emit changes targeting files in Valid write targets.
+- Exception: when target_file is null and module is "unattached", the change is valid even without a matching file in Valid write targets.
+- Return { "changes": [] } if there is nothing actionable.
+`
+}
+
+function buildUserPrompt({ noteContent, noteFilename, contextContent }) {
+  const ctx = String(contextContent || '').trim()
+  if (ctx) {
+    return `Current note file: ${noteFilename}\n\nCurrent working context (_context.md):\n${ctx}\n\nCurrent note:\n${noteContent}`
+  }
+  return `Current note file: ${noteFilename}\n\nCurrent note:\n${noteContent}`
 }
 
 function hasMeaningfulNoteContent(noteContent) {
   const text = String(noteContent || '')
-    .replace(/^\s*#\s+.+$/gm, ' ')
+    .replace(/^\s*#\s+(\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})\s*$/gm, ' ')
+    .replace(/^\s*#\s+(\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})\s+/gm, '')
     .replace(/^\s*[-*_]{3,}\s*$/gm, ' ')
     .replace(/\[\[[^\]]+\]\]/g, ' ')
     .replace(/[#>*_`~-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 
-  return text.length > 0
+  return text.length > 20
 }
 
 function normalizeNestedWikilinks(text) {
@@ -224,7 +306,336 @@ function findPeoplePathByName(name, allowedFiles) {
   return null
 }
 
-function tryFastRouteShortNote(noteContent, noteFilename, allowedFiles = []) {
+function humanizeEntityName(path) {
+  const base = String(path || '').split('/').pop()?.replace(/\.md$/i, '') || ''
+  const raw = base.replace(/[-_]+/g, ' ').trim()
+  if (!raw) return ''
+  return raw
+    .split(/\s+/)
+    .map((part) => part ? `${part.charAt(0).toUpperCase()}${part.slice(1)}` : part)
+    .join(' ')
+}
+
+function normalizeEntityCandidate(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/[-_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function ensureEntityWikilink(text, entityName) {
+  const source = String(text || '')
+  const name = String(entityName || '').trim()
+  if (!source || !name) return source
+
+  const linked = source.match(/\[\[([^\]]+)\]\]/g) || []
+  const alreadyLinked = linked.some((entry) => {
+    const inner = entry.replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0].trim().toLowerCase()
+    return inner === name.toLowerCase()
+  })
+  if (alreadyLinked) return source
+
+  const rx = new RegExp(`(?<!\\[\\[)\\b${escapeRegex(name)}\\b(?!\\]\\])`, 'gi')
+  if (!rx.test(source)) return source
+  rx.lastIndex = 0
+  return source.replace(rx, (match) => `[[${match}]]`)
+}
+
+function extractEntityCandidates(noteContent) {
+  const text = String(noteContent || '')
+  const buckets = new Map()
+
+  // 1. Extract from wikilinks
+  const wiki = text.match(/\[\[[^\]]+\]\]/g) || []
+  for (const entry of wiki) {
+    const inner = entry.replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0].trim()
+    if (!inner) continue
+    const key = inner.toLowerCase()
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(inner)
+  }
+
+  // 2. Extract capitalized names from person-name contexts (after with/and/to/from/met/called/told/asked/emailed/pinged)
+  const NAME_CONTEXT_RE = /\b(?:with|and|to|from|met|called|told|asked|emailed|pinged|cc|via)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/g
+  const STOP_WORDS = new Set([
+    'the', 'this', 'that', 'then', 'them', 'they', 'their', 'there', 'these', 'those',
+    'today', 'tomorrow', 'tuesday', 'thursday', 'wednesday', 'monday', 'friday', 'saturday', 'sunday',
+    'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+    'quick', 'some', 'about', 'also', 'just', 'very', 'much', 'many', 'more', 'most',
+  ])
+  for (const match of text.matchAll(NAME_CONTEXT_RE)) {
+    const candidate = match[1].trim()
+    if (!candidate || candidate.length < 2) continue
+    if (STOP_WORDS.has(candidate.toLowerCase())) continue
+    const key = candidate.toLowerCase()
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(candidate)
+  }
+
+  const unique = [...buckets.values()].map((values) =>
+    values.sort((a, b) => a.length - b.length)[0]
+  )
+
+  // Keep shortest candidate when two names share the first word (e.g. "Acme" vs "Acme Core").
+  unique.sort((a, b) => a.length - b.length)
+  const firstWordSeen = new Set()
+  const deduped = []
+  for (const candidate of unique) {
+    const firstWord = String(candidate || '').trim().split(/\s+/)[0]?.toLowerCase()
+    if (!firstWord) continue
+    if (firstWordSeen.has(firstWord)) continue
+    firstWordSeen.add(firstWord)
+    deduped.push(candidate)
+  }
+
+  return deduped
+}
+
+function normalizeProjectLookup(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function stripExistingWikilinks(text) {
+  let out = String(text || '')
+    .replace(/\\\[/g, '[')
+    .replace(/\\\]/g, ']')
+
+  for (let i = 0; i < 6; i += 1) {
+    const next = out
+      .replace(/\[\[\[\s*([^\]]+?)\s*\]\]\]/g, '$1')
+      .replace(/\[\[\s*([^\]]+?)\s*\]\]/g, '$1')
+    if (next === out) break
+    out = next
+  }
+
+  return out
+}
+
+function stripExistingInlineTags(text) {
+  return String(text || '')
+    .replace(/\s*#(?:action|decision|follow-up|delegate|mention|idea)\b/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n +/g, '\n')
+    .trim()
+}
+
+function ensureEntityWikilinkForAlias(text, alias, entityName) {
+  const source = String(text || '')
+  const name = String(entityName || '').trim()
+  const aliasText = String(alias || '').trim()
+  if (!source || !name || !aliasText) return source
+
+  const linked = source.match(/\[\[([^\]]+)\]\]/g) || []
+  const alreadyLinked = linked.some((entry) => {
+    const inner = entry.replace(/^\[\[/, '').replace(/\]\]$/, '').split('|')[0].trim().toLowerCase()
+    return inner === name.toLowerCase()
+  })
+  if (alreadyLinked) return source
+
+  const rx = new RegExp(`(?<!\\[\\[)\\b${escapeRegex(aliasText)}\\b(?!\\]\\])`, 'ig')
+  if (!rx.test(source)) return source
+  rx.lastIndex = 0
+  return source.replace(rx, () => `[[${name}]]`)
+}
+
+function extractUnknownProjectsNearKeyword(noteContent, projectPaths = []) {
+  const text = String(noteContent || '')
+  const unknown = []
+
+  const patterns = [
+    /\bproject(?:s)?\b(?:\W+\w+){0,5}\W+([A-Z][A-Za-z0-9&'’._-]*(?:\s+[A-Z][A-Za-z0-9&'’._-]*){0,4})/gi,
+    /([A-Z][A-Za-z0-9&'’._-]*(?:\s+[A-Z][A-Za-z0-9&'’._-]*){0,4})(?:\W+\w+){0,5}\W+\bproject(?:s)?\b/gi,
+  ]
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const candidate = String(match[1] || '').trim()
+      if (!candidate || candidate.length < 2) continue
+      const known = matchEntityPath(candidate, projectPaths, true)
+      if (known) continue
+      unknown.push(candidate)
+    }
+  }
+
+  return [...new Set(unknown.map((value) => value.trim()).filter(Boolean))]
+}
+
+function tightNorm(value) {
+  // Strip ALL non-alphanumeric chars for resilient matching (handles Ubuntu.com → ubuntucom)
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+// Extract meaningful words for bag-of-words matching (removes stop words, crude-depluralize)
+const _TOKEN_STOP = new Set(['for','and','the','of','a','an','in','on','to','with','at','by','from','or','is','are','was'])
+function extractContentTokens(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !_TOKEN_STOP.has(w))
+    .map((w) => w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w) // crude depluralize
+}
+
+function matchEntityPath(candidate, entityPaths, partial = false) {
+  const needle = normalizeEntityCandidate(candidate)
+  const tightNeedle = tightNorm(candidate)
+  if (!needle && !tightNeedle) return null
+
+  let best = null
+  let bestScore = -1
+
+  for (const path of entityPaths || []) {
+    const base = String(path || '').split('/').pop()?.replace(/\.md$/i, '') || ''
+    const aliases = [base, base.replace(/[-_]+/g, ' ')].map(normalizeEntityCandidate).filter(Boolean)
+    const tightBase = tightNorm(base)
+
+    for (const alias of aliases) {
+      const exact = alias === needle
+      const fuzzy = partial && (alias.includes(needle) || needle.includes(alias))
+      if (exact || fuzzy) {
+        const score = exact ? 1000 : Math.min(alias.length, needle.length)
+        if (score > bestScore) { best = path; bestScore = score }
+        continue
+      }
+      // Fallback: tight normalization handles special chars like dots (Ubuntu.com → ubuntucom)
+      if (tightNeedle && tightBase) {
+        const tightExact = tightBase === tightNeedle
+        const tightFuzzy = partial && (tightBase.includes(tightNeedle) || tightNeedle.includes(tightBase))
+        if (tightExact || tightFuzzy) {
+          const score = tightExact ? 500 : Math.min(tightBase.length, tightNeedle.length) / 2
+          if (score > bestScore) { best = path; bestScore = score }
+        }
+      }
+    }
+
+    // Bag-of-words tier: handles non-contiguous word matches like
+    // "architecture for product bubble" → "information-architecture-framework-for-product-bubbles"
+    if (partial && bestScore < 500) {
+      const needleTokens = extractContentTokens(candidate)
+      const baseTokens = extractContentTokens(base)
+      if (needleTokens.length >= 2 && baseTokens.length >= 2) {
+        const baseSet = new Set(baseTokens)
+        const hits = needleTokens.filter((t) => baseSet.has(t)).length
+        const coverage = hits / needleTokens.length
+        if (coverage >= 0.8 && hits >= 2) {
+          const score = coverage * 200
+          if (score > bestScore) { best = path; bestScore = score }
+        }
+      }
+    }
+  }
+
+  return best
+}
+
+function runDeterministicEntityPrepass(noteContent, allowedFiles = [], enabledModules = {}) {
+  // Strip inline tags but keep wikilinks so extractEntityCandidates can read them
+  const cleanedForCandidates = stripExistingInlineTags(noteContent)
+  const candidates = extractEntityCandidates(cleanedForCandidates)
+  console.log('[Prepass] candidates extracted', { candidates, inputPreview: cleanedForCandidates?.slice(0, 100) })
+  // Now strip wikilinks for the re-linking loop (prevents double-linking known entities)
+  let out = String(stripExistingWikilinks(cleanedForCandidates) || '')
+
+  const peoplePaths = enabledModules.people === false
+    ? []
+    : (allowedFiles || []).filter((path) => String(path).toLowerCase().startsWith('people/') && String(path).toLowerCase().endsWith('.md'))
+  const projectPaths = enabledModules.projects === false
+    ? []
+    : (allowedFiles || []).filter((path) => String(path).toLowerCase().startsWith('projects/') && String(path).toLowerCase().endsWith('.md'))
+
+  const unknownPeople = []
+  const unknownProjects = []
+  const linkedPeople = new Set()
+  const linkedProjects = new Set()
+  const linkedProjectLookups = new Set()
+  const ideasPaths = enabledModules.ideas === false
+    ? []
+    : (allowedFiles || []).filter((path) => String(path).toLowerCase().startsWith('ideas/') && String(path).toLowerCase().endsWith('.md'))
+
+  for (const candidate of candidates) {
+    const personPath = matchEntityPath(candidate, peoplePaths, false)
+    if (personPath) {
+      const display = humanizeEntityName(personPath)
+      out = ensureEntityWikilink(out, display)
+      linkedPeople.add(display)
+      continue
+    }
+
+    const projectPath = matchEntityPath(candidate, projectPaths, true)
+    if (projectPath) {
+      const display = humanizeEntityName(projectPath)
+      // Use candidate text (user's original wording) so special chars like dots are preserved
+      out = ensureEntityWikilink(out, candidate)
+      linkedProjects.add(display)
+      linkedProjectLookups.add(normalizeProjectLookup(display))
+      continue
+    }
+
+    // Check ideas paths — if matched, link silently without adding to unknown
+    const ideaPath = matchEntityPath(candidate, ideasPaths, true)
+    if (ideaPath) {
+      out = ensureEntityWikilink(out, candidate)
+      continue
+    }
+
+    // Classify the unknown by heuristic so the cleanup modal shows the right type chip.
+    const candidateType = classifyUnknownEntityType(candidate.trim())
+    if (candidateType === 'project') {
+      unknownProjects.push(candidate.trim())
+    } else {
+      unknownPeople.push(candidate.trim())
+    }
+  }
+
+  // Scan for known projects via multi-word capitalized sequences in the text.
+  // This catches project names in prose (not in wikilinks, not after prepositions)
+  // and handles slug-normalized names like "Ubuntu.com" → "ubuntucom-..."
+  if (projectPaths.length > 0) {
+    // Words that should never START a matched sequence (sentence starters, prepositions, articles)
+    const STOP_STARTS = new Set([
+      'on','in','at','to','for','with','by','of','the','a','an','and','or','but','yet','so','nor',
+      'from','about','into','over','after','before','as','that','this','these','those','via','per',
+    ])
+    const MULTI_WORD_CAP_RE = /(?<!\[\[)\b([A-Z][A-Za-z0-9.]*(?:\s+[A-Z][A-Za-z0-9.]+)+)\b(?!\]\])/g
+    const scanned = new Set()
+    for (const match of out.matchAll(MULTI_WORD_CAP_RE)) {
+      const candidate = match[1].trim()
+      if (!candidate || scanned.has(candidate.toLowerCase())) continue
+      // Skip sequences that start with a stop word (e.g. "On Memory OS App" → "On" is a preposition)
+      const firstWord = candidate.split(/\s+/)[0].toLowerCase()
+      if (STOP_STARTS.has(firstWord)) continue
+      scanned.add(candidate.toLowerCase())
+      const projectPath = matchEntityPath(candidate, projectPaths, true)
+      if (!projectPath) continue
+      const display = humanizeEntityName(projectPath)
+      if (linkedProjects.has(display)) continue
+      // Use user's original text as the wikilink name (ensureEntityWikilink is case-insensitive)
+      out = ensureEntityWikilink(out, candidate)
+      linkedProjects.add(display)
+      linkedProjectLookups.add(normalizeProjectLookup(display))
+    }
+  }
+
+  const filteredUnknownPeople = [...new Set(unknownPeople.map((name) => name.trim()).filter(Boolean))]
+
+  const result = {
+    noteContent: normalizeNestedWikilinks(out),
+    unknownPeople: filteredUnknownPeople,
+    unknownProjects: [...new Set(unknownProjects.map((name) => name.trim()).filter(Boolean))],
+    linkedPeople: [...linkedPeople],
+    linkedProjects: [...linkedProjects],
+  }
+  console.log('[Prepass] result', { unknownPeople: result.unknownPeople, unknownProjects: result.unknownProjects, linkedPeople: result.linkedPeople })
+  return result
+}
+
+function tryFastRouteShortNote(noteContent, noteFilename, allowedFiles = [], enabledModules = {}) {
   const normalized = normalizeNestedWikilinks(String(noteContent || '').trim())
   if (!normalized) return null
 
@@ -240,6 +651,10 @@ function tryFastRouteShortNote(noteContent, noteFilename, allowedFiles = []) {
   if (!guessedName) return null
 
   const targetPath = findPeoplePathByName(guessedName, allowedFiles)
+  const peopleModuleEnabled = enabledModules?.people !== false
+  if (!targetPath && !peopleModuleEnabled) return null
+  if (!targetPath) return null
+
   const isUrgent = /\b(urgent|asap|immediately|critical|blocker)\b/.test(lower)
   const isImportant = /\b(important|priority|high-priority|high priority)\b/.test(lower)
   const marker = delegateIntent && !discussIntent ? 'delegate' : (isUrgent ? 'urgent' : (isImportant ? 'important' : 'follow-up'))
@@ -249,7 +664,7 @@ function tryFastRouteShortNote(noteContent, noteFilename, allowedFiles = []) {
 
   return {
     annotated_note: normalizeNestedWikilinks(noteContent),
-    changes: targetPath ? [{
+    changes: [{
       id: crypto.randomUUID?.() || `${Date.now()}-fast`,
       target_file: targetPath,
       target_section: section,
@@ -257,8 +672,8 @@ function tryFastRouteShortNote(noteContent, noteFilename, allowedFiles = []) {
       marker,
       title,
       module: 'people',
-    }] : [],
-    unknown_entities: targetPath ? [] : [{ type: 'person', name: guessedName }],
+    }],
+    unknown_entities: [],
     _fastPath: true,
     _note: noteFilename,
   }
@@ -322,6 +737,27 @@ function safeParseJSON(raw) {
   throw new Error(`Invalid JSON from LLM: ${text.slice(0, 160)}`)
 }
 
+async function parseRoutingResponseWithRetry({ raw, linkedNoteContent, noteFilename, promptAllowFiles, enabledModules, settings }) {
+  try {
+    return safeParseJSON(raw)
+  } catch (firstErr) {
+    console.warn('Routing JSON parse failed on first attempt, retrying with strict JSON-only prompt:', firstErr?.message || firstErr)
+
+    const retrySystem = `${buildSystemPrompt(promptAllowFiles, enabledModules)}\n\nSTRICT OUTPUT RULES:\n- Return ONLY one valid JSON object.\n- Do not include markdown fences.\n- Do not include prose or explanation.\n- Ensure JSON is complete and parseable.`
+
+    const retryUser = `The previous output was invalid JSON. Re-run routing for the same note and return complete strict JSON only.\n\nCurrent note file: ${noteFilename}\n\nCurrent note markdown:\n${linkedNoteContent}`
+
+    const retryRaw = await callLLM(
+      [{ role: 'user', content: retryUser }],
+      retrySystem,
+      settings,
+      1400
+    )
+
+    return safeParseJSON(retryRaw)
+  }
+}
+
 function folderForEntityType(type) {
   const t = String(type || '').trim().toLowerCase()
   if (t === 'person' || t === 'people') return 'people'
@@ -358,6 +794,113 @@ function escapeRegex(source) {
 function peoplePathToName(path) {
   const filename = String(path || '').split('/').pop() || ''
   return filename.replace(/\.md$/i, '').trim()
+}
+
+function ensurePersonWikilink(text, personName) {
+  return ensureEntityWikilink(text, personName)
+}
+
+function dedupeUnknownEntities(entities = []) {
+  const out = []
+  const seen = new Set()
+
+  for (const entity of entities) {
+    const type = String(entity?.type || '').trim().toLowerCase()
+    const name = String(entity?.name || '').trim()
+    if (!type || !name) continue
+    const key = `${type}:${name.toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ type, name })
+  }
+
+  return out
+}
+
+function matchesUnknownEntity(entity, type, name) {
+  const entityType = String(entity?.type || '').trim().toLowerCase()
+  const entityName = String(entity?.name || '').trim().toLowerCase()
+  return entityType === String(type || '').trim().toLowerCase() && entityName === String(name || '').trim().toLowerCase()
+}
+
+export function runCleanupPrepass(noteContent, allowedFiles = [], enabledModules = {}) {
+  const enabledFolders = MODULE_REGISTRY
+    .filter((moduleDef) => enabledModules[moduleDef.id] !== false)
+    .map((moduleDef) => moduleDef.vaultFolder)
+
+  const scopedAllowedFiles = (allowedFiles || []).filter((path) => enabledFolders.includes(String(path || '').split('/')[0]))
+  const prepass = runDeterministicEntityPrepass(stripExistingInlineTags(noteContent), scopedAllowedFiles, enabledModules)
+  const linkableFolders = enabledFolders.filter((folder) => folder === 'people' || folder === 'projects')
+  const linkedNoteContent = normalizeNestedWikilinks(autoLinkKnownMentions(prepass.noteContent, scopedAllowedFiles, linkableFolders))
+
+  return {
+    noteContent: linkedNoteContent,
+    unknownPeople: prepass.unknownPeople,
+    unknownProjects: prepass.unknownProjects,
+  }
+}
+
+// Heuristic words that suggest a wikilinked name is a project rather than a person
+const _PROJECT_NOUNS = new Set([
+  'revamp', 'framework', 'system', 'app', 'project', 'platform', 'initiative',
+  'tool', 'service', 'upgrade', 'redesign', 'migration', 'integration', 'portal',
+  'suite', 'hub', 'engine', 'dashboard', 'api', 'website', 'site', 'page', 'plan',
+  'feature', 'module', 'refactor', 'release', 'launch', 'sprint',
+])
+
+function classifyUnknownEntityType(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean)
+  // 3+ words lean toward project
+  if (words.length >= 3) return 'project'
+  const lower = String(name || '').toLowerCase()
+  // Contains a project noun
+  if (words.some((w) => _PROJECT_NOUNS.has(w.toLowerCase()))) return 'project'
+  // Contains non-human chars (dots, digits)
+  if (/[.0-9]/.test(name)) return 'project'
+  // Default: 1-2 title-case words → person
+  return 'person'
+}
+
+function extractUnknownPeopleFromWikilinks(noteContent, allowedFiles = [], enabledModules = {}) {
+  // Build a lookup set for all known vault entity basenames (people + projects + ideas)
+  const allEntityPaths = (allowedFiles || []).filter((path) => {
+    const folder = String(path).toLowerCase().split('/')[0]
+    return (
+      (folder === 'people' || folder === 'projects' || folder === 'ideas') &&
+      String(path).toLowerCase().endsWith('.md')
+    )
+  })
+
+  const knownByBasename = new Set(
+    allEntityPaths.map((path) => peoplePathToName(path).toLowerCase()).filter(Boolean)
+  )
+
+  const wikiMatches = String(noteContent || '').match(/\[\[[^\]]+\]\]/g) || []
+  const unknown = []
+
+  for (const match of wikiMatches) {
+    const inner = match.replace(/^\[\[/, '').replace(/\]\]$/, '').trim()
+    const candidate = inner.split('|')[0]?.trim() || ''
+    if (!candidate) continue
+    // Allow letters, spaces, apostrophes, hyphens, dots, digits in wikilink names
+    if (!/^[A-Za-z][A-Za-z0-9\s''.\-]{0,100}$/.test(candidate)) continue
+
+    const key = candidate.toLowerCase()
+    // Exact basename match against any entity type
+    if (knownByBasename.has(key)) continue
+    // Fuzzy match against all known vault entity paths (handles slug mismatches and special chars)
+    if (matchEntityPath(candidate, allEntityPaths, true)) continue
+
+    const type = classifyUnknownEntityType(candidate)
+    // Only surface unknown people when the people module is enabled
+    if (type === 'person' && enabledModules.people === false) continue
+    // Only surface unknown projects when the projects module is enabled
+    if (type === 'project' && enabledModules.projects === false) continue
+
+    unknown.push({ type, name: candidate })
+  }
+
+  return dedupeUnknownEntities(unknown)
 }
 
 function hasMatchingPeopleChange(changes, personPath, sentence) {
@@ -419,6 +962,11 @@ function dedupeChanges(changes = []) {
       const normA = normalizeTaskText(textA)
       const normB = normalizeTaskText(textB)
       const score = similarityScore(normA, normB)
+      const checkA = /^-\s*\[[ x]\]/i.test(String(change?.content || ''))
+      const checkB = /^-\s*\[[ x]\]/i.test(String(existing?.content || ''))
+      if (checkA && checkB) {
+        return score >= 0.9
+      }
       const containment = normA.length >= 12 && normB.length >= 12 && (normA.includes(normB) || normB.includes(normA))
       return score >= 0.52 || containment
     })
@@ -544,9 +1092,10 @@ function synthesizePeopleDelegates(noteContent, allowedFiles, existingChanges = 
     const lowerSentence = sentence.toLowerCase()
     const delegateLike = /\b(needs\s+to|need\s+to\s+tell|have\s+to\s+talk\s+to|delegate\s+to|ask\s+[^.]+\s+to)\b/.test(lowerSentence)
     const discussLike = /\b(discuss|talk\s+to|talk\s+about|touch\s+base|check\s+in|follow\s*up|circle\s*back)\b/.test(lowerSentence)
-    if (!delegateLike && !discussLike) continue
+    const pendingLike = /\b(waiting\s+on|need\s+to|needs\s+to|should|will\s+need|to\s+be\s+decided|decision\s+pending|follow\s*up|check\s+in)\b/.test(lowerSentence)
+    if (!delegateLike && !discussLike && !pendingLike) continue
     const urgentLike = /\b(urgent|asap|immediately|critical|blocker)\b/.test(lowerSentence)
-    const useTalkAbout = (discussLike && !delegateLike) || urgentLike
+    const useTalkAbout = (discussLike && !delegateLike) || pendingLike || urgentLike
 
     for (const personPath of peopleFiles) {
       const personName = peoplePathToName(personPath)
@@ -640,9 +1189,22 @@ export function useNoteProcessor() {
     setError(null)
   }, [])
 
-  const process = useCallback(async ({ noteContent, noteFilename, contextContent, allowedFiles = [], settings, enabledModules = {} }) => {
+  const process = useCallback(async ({
+    noteContent,
+    noteFilename,
+    contextContent,
+    allowedFiles = [],
+    settings,
+    enabledModules = {},
+    preResolvedUnknownEntities = [],
+    suppressedUnknownEntities = [],
+  }) => {
     setStatus('loading')
     setError(null)
+
+    console.log('[Processor] process() called', {
+      noteLength: noteContent?.length,
+    })
 
     try {
       const enabledFolders = MODULE_REGISTRY
@@ -650,11 +1212,25 @@ export function useNoteProcessor() {
         .map((moduleDef) => moduleDef.vaultFolder)
 
       const scopedAllowedFiles = (allowedFiles || []).filter((path) => enabledFolders.includes(String(path || '').split('/')[0]))
+      console.log('[Processor] scopedAllowedFiles', scopedAllowedFiles)
 
-      const linkableFolders = enabledFolders.filter((folder) => folder === 'people' || folder === 'projects')
-      const linkedNoteContent = normalizeNestedWikilinks(autoLinkKnownMentions(noteContent, scopedAllowedFiles, linkableFolders))
+      // Skip re-preprocessing if content is already wikilinked (from Stage 1 cleanup modal)
+      const alreadyWikilinked = /\[\[[^\]]+\]\]/.test(String(noteContent || ''))
+      const linkedNoteContent = normalizeNestedWikilinks(stripExistingInlineTags(String(noteContent || '')))
+      // runDeterministicEntityPrepass is pure local string matching — no LLM call
+      console.log('[Timing] prepass start', Date.now())
+      const prepass = alreadyWikilinked
+        ? { noteContent: linkedNoteContent, unknownPeople: [], unknownProjects: [] }
+        : runDeterministicEntityPrepass(stripExistingInlineTags(noteContent), scopedAllowedFiles, enabledModules)
+      console.log('[Timing] prepass end', Date.now())
+      console.log('[Processor] after prepass', {
+        alreadyWikilinked,
+        linkedNoteContentLength: linkedNoteContent?.length,
+      })
 
-      if (!hasMeaningfulNoteContent(linkedNoteContent)) {
+      const meaningful = hasMeaningfulNoteContent(linkedNoteContent)
+      console.log('[Processor] meaningful content check', { result: meaningful })
+      if (!meaningful) {
         const emptyResult = {
           annotated_note: normalizeNestedWikilinks(linkedNoteContent),
           changes: [],
@@ -665,24 +1241,151 @@ export function useNoteProcessor() {
         return emptyResult
       }
 
-      const fastResult = tryFastRouteShortNote(linkedNoteContent, noteFilename, scopedAllowedFiles)
+      const fastResult = tryFastRouteShortNote(linkedNoteContent, noteFilename, scopedAllowedFiles, enabledModules)
+      console.log('[Processor] fast route check', { fastResult })
       if (fastResult) {
         setResult(fastResult)
         setStatus('success')
         return fastResult
       }
 
-      const promptAllowFiles = selectPromptAllowList(linkedNoteContent, scopedAllowedFiles)
-
-      const raw = await callLLM(
-        [{ role: 'user', content: buildUserPrompt({ noteContent: linkedNoteContent, noteFilename }) }],
-        buildSystemPrompt(promptAllowFiles, enabledModules),
-        settings,
-        900
+      const peopleAndProjectAllowed = scopedAllowedFiles.filter((path) => {
+        const folder = String(path || '').split('/')[0]?.toLowerCase()
+        return folder === 'people' || folder === 'projects'
+      })
+      let promptAllowFiles = selectPromptAllowList(
+        linkedNoteContent,
+        peopleAndProjectAllowed.length > 0 ? peopleAndProjectAllowed : scopedAllowedFiles
       )
+      const writerFile = enabledModules?.people !== false ? String(settings?.writerFile || '').trim() : ''
+      if (writerFile && scopedAllowedFiles.includes(writerFile) && !promptAllowFiles.includes(writerFile)) {
+        promptAllowFiles = [...promptAllowFiles, writerFile]
+      }
+      const promptAllowSet = new Set(promptAllowFiles)
 
-      const parsed = safeParseJSON(raw)
-      let hydratedChanges = (parsed.changes || []).map((change, index) => ({
+      const safeParseChanges = (raw) => {
+        if (!raw) return []
+        try {
+          const obj = safeParseJSON(raw)
+          return Array.isArray(obj?.changes) ? obj.changes : []
+        } catch {
+          return []
+        }
+      }
+
+      const userMsg = [{ role: 'user', content: buildUserPrompt({ noteContent: linkedNoteContent, noteFilename, contextContent }) }]
+
+      console.log('[Processor] firing Promise.all', {
+        scopedAllowedFilesCount: scopedAllowedFiles?.length,
+        noteForLLMPreview: linkedNoteContent?.slice(0, 80),
+      })
+      console.log('[Timing] Promise.all start', Date.now())
+
+      const [mentionRaw, taskRaw] = await Promise.all([
+        callLLM(userMsg, buildMentionSystemPrompt(promptAllowFiles), settings, 1200),
+        callLLM(userMsg, buildTaskSystemPrompt(promptAllowFiles), settings, 1200),
+      ])
+
+      console.log('[Timing] Promise.all end', Date.now())
+      console.log('[Processor] raw mention response', JSON.stringify(mentionRaw))
+      console.log('[Processor] raw task response', JSON.stringify(taskRaw))
+
+      console.log('[Processor] Promise.all resolved', {
+        mentionRawLength: mentionRaw?.length,
+        taskRawLength: taskRaw?.length,
+      })
+
+      let mentionChanges = safeParseChanges(mentionRaw)
+
+      const MARKER_SECTION_MAP = {
+        mention: null,
+        action: '## Open Actions',
+        'follow-up': '## Talk About',
+        delegate: '## Delegate',
+        decision: '## Decisions',
+      }
+
+      const extractedTaskChanges = safeParseChanges(taskRaw)
+      console.log('[Processor] taskRaw extracted', extractedTaskChanges)
+
+      let taskChanges = extractedTaskChanges.map((change) => {
+        const marker = normalizeMarker(change?.marker)
+        const rawContent = String(change?.content || '').trim()
+        const cleaned = rawContent.replace(/^- \[ \] (action|follow-up|delegate|decision):\s*/i, '- [ ] ')
+        const capitalisedContent = cleaned.replace(/^- \[ \] (.)/, (_, ch) => `- [ ] ${String(ch || '').toUpperCase()}`)
+        const rawTitle = String(change?.title || '').trim()
+        const cleanedTitle = rawTitle
+          .replace(/^(action|follow-up|delegate|decision):\s*/i, '')
+          .replace(/^(.)/, (ch) => String(ch || '').toUpperCase())
+
+        return {
+          ...change,
+          marker,
+          target_section: MARKER_SECTION_MAP[marker] ?? change?.target_section,
+          content: capitalisedContent,
+          title: cleanedTitle,
+        }
+      })
+
+      taskChanges = taskChanges.map((change) => {
+        const marker = normalizeMarker(change?.marker)
+        if (marker !== 'action') return change
+
+        const sentence = `${change?.title || ''} ${change?.content || ''}`.toLowerCase()
+        const isFirstPerson = /\b(i\b|i'm|i am|i need to|i should|i have to|i will|my\b|me\b)\b/.test(sentence)
+        if (!isFirstPerson) return change
+
+        return {
+          ...change,
+          target_file: writerFile || null,
+          target_section: WRITER_ACTIONS_SECTION,
+          module: writerFile ? 'people' : change?.module,
+        }
+      })
+
+      const normalisedChanges = taskChanges
+      console.log('[Processor] after normalise', normalisedChanges)
+
+      const allRawChanges = [
+        ...mentionChanges,
+        ...taskChanges,
+      ].filter((change) => {
+        const target = String(change?.target_file || '')
+        const isUnassignedWriterAction = !target
+          && normalizeMarker(change?.marker) === 'action'
+          && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+        const isUnattachedModuleAction = !target && String(change?.module || '') === 'unattached'
+        if (isUnassignedWriterAction || isUnattachedModuleAction) return true
+        return promptAllowSet.has(target)
+      })
+
+      const filteredChanges = allRawChanges
+      console.log('[Processor] after module filter', filteredChanges)
+
+      const mergedChanges = [...mentionChanges, ...taskChanges]
+      console.log('[Processor] after merge', mergedChanges)
+      console.log('[Processor] parsed changes', {
+        count: mergedChanges?.length,
+        changes: mergedChanges,
+      })
+
+      const deterministicUnknownPeople = extractUnknownPeopleFromWikilinks(
+        linkedNoteContent,
+        scopedAllowedFiles,
+        enabledModules
+      )
+      const mergedUnknownEntities = dedupeUnknownEntities([
+        ...(preResolvedUnknownEntities || []),
+        ...deterministicUnknownPeople,
+        ...prepass.unknownPeople.map((name) => ({ type: 'person', name })),
+        ...prepass.unknownProjects.map((name) => ({ type: 'project', name })),
+      ]).filter((entity) => {
+        return !(suppressedUnknownEntities || []).some((suppressed) =>
+          matchesUnknownEntity(entity, suppressed?.type, suppressed?.name)
+        )
+      })
+
+      let hydratedChanges = (allRawChanges || []).map((change, index) => ({
         id: change.id || crypto.randomUUID?.() || `${Date.now()}-${index}`,
         target_file: change.target_file,
         target_section: change.target_section,
@@ -711,17 +1414,40 @@ export function useNoteProcessor() {
           normalizedMarker = inferred
         }
 
-        if (moduleDef?.id === 'people') {
+        const forceMyActions = String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+
+        if (forceMyActions) {
+          normalizedMarker = 'action'
+        } else if (normalizedMarker === 'decision') {
+          normalizedMarker = 'decision'
+        } else if (moduleDef?.id === 'projects') {
+          // Projects support action, decision, mention.
+          // Any other task-ish marker is coerced to action.
+          if (normalizedMarker !== 'action' && normalizedMarker !== 'decision' && normalizedMarker !== 'mention') {
+            normalizedMarker = 'action'
+          }
+        } else if (moduleDef?.id === 'people') {
           if (normalizedMarker === 'urgent' || normalizedMarker === 'follow-up') {
             // Discuss / follow-up items belong in Talk About.
             normalizedMarker = 'follow-up'
+          } else if (normalizedMarker === 'mention') {
+            // Plain mentions belong in Recent Mentions, not delegate tasks.
+            normalizedMarker = 'mention'
           } else {
             normalizedMarker = 'delegate'
           }
         }
 
         const normalizedModule = moduleDef?.id || String(change.module || '').trim().toLowerCase() || 'other'
-        const normalizedSection = resolveTargetSection(moduleDef, normalizedMarker, change.target_section)
+        const normalizedSection = forceMyActions
+          ? WRITER_ACTIONS_SECTION
+          : (moduleDef?.id === 'projects'
+            ? (normalizedMarker === 'decision'
+              ? '## Decisions'
+              : (normalizedMarker === 'mention' ? '## Recent Mentions' : '## Open Actions'))
+            : (normalizedMarker === 'decision'
+              ? '## Decisions'
+              : resolveTargetSection(moduleDef, normalizedMarker, change.target_section)))
 
         return {
           ...change,
@@ -731,16 +1457,27 @@ export function useNoteProcessor() {
         }
       })
 
-      const synthesizedPeopleChanges = synthesizePeopleDelegates(linkedNoteContent, scopedAllowedFiles, hydratedChanges)
-      if (synthesizedPeopleChanges.length > 0) {
-        hydratedChanges = [...hydratedChanges, ...synthesizedPeopleChanges]
-      }
+      hydratedChanges = hydratedChanges.map((change) => {
+        const targetPath = String(change?.target_file || '').toLowerCase()
+        if (!targetPath.startsWith('people/')) return change
+
+        const personName = peoplePathToName(change.target_file)
+        return {
+          ...change,
+          title: ensurePersonWikilink(change.title, personName),
+          content: ensurePersonWikilink(change.content, personName),
+        }
+      })
+
+      // Keep task ownership strictly from extracted changes.
+      // The old people synthesis fallback fanned one sentence out to every mentioned person,
+      // which creates duplicate follow-ups with incorrect ownership.
 
       // Synthesize task changes for unknown entities (files that don't exist yet).
       // This covers the first-run case where the LLM can't emit a change for a missing file.
       const unknownPeopleChanges = synthesizeUnknownPeopleChanges(
         linkedNoteContent,
-        parsed.unknown_entities || [],
+        mergedUnknownEntities,
         hydratedChanges
       )
       if (unknownPeopleChanges.length > 0) {
@@ -753,16 +1490,21 @@ export function useNoteProcessor() {
       // Build the set of candidate paths for entities that will be created,
       // so we can retain changes targeting those files (first-run task capture).
       const pendingEntityPaths = new Set(
-        (parsed.unknown_entities || []).flatMap((entity) =>
+        mergedUnknownEntities.flatMap((entity) =>
           entityCandidatePaths(entity).map((p) => p.toLowerCase())
         )
       )
 
       if (scopedAllowedFiles.length > 0) {
         const validFiles = new Set(scopedAllowedFiles)
-        const rejected = hydratedChanges.filter(
-          (change) => !validFiles.has(change.target_file) && !pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
-        )
+        const rejected = hydratedChanges.filter((change) => {
+          const isUnassignedWriterAction = !change?.target_file
+            && normalizeMarker(change?.marker) === 'action'
+            && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+          const isUnattachedModuleAction = !change?.target_file && String(change?.module || '') === 'unattached'
+          if (isUnassignedWriterAction || isUnattachedModuleAction) return false
+          return !validFiles.has(change.target_file) && !pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
+        })
 
         if (rejected.length > 0) {
           console.warn(
@@ -771,19 +1513,35 @@ export function useNoteProcessor() {
           )
         }
 
-        hydratedChanges = hydratedChanges.filter(
-          (change) => validFiles.has(change.target_file) || pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
-        )
+        hydratedChanges = hydratedChanges.filter((change) => {
+          const isUnassignedWriterAction = !change?.target_file
+            && normalizeMarker(change?.marker) === 'action'
+            && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+          const isUnattachedModuleAction = !change?.target_file && String(change?.module || '') === 'unattached'
+          if (isUnassignedWriterAction || isUnattachedModuleAction) return true
+          return validFiles.has(change.target_file) || pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
+        })
       }
 
-      const filteredUnknown = (parsed.unknown_entities || []).filter((entity) => {
+      // Build full entity path list for cross-type fuzzy safety net
+      const allEntityPaths = (scopedAllowedFiles || []).filter((path) => {
+        const folder = String(path).toLowerCase().split('/')[0]
+        return folder === 'people' || folder === 'projects' || folder === 'ideas'
+      })
+
+      const filteredUnknown = mergedUnknownEntities.filter((entity) => {
+        const name = String(entity?.name || '').trim()
+        if (!name) return false
+        // Type-specific path check (fast path)
         const candidates = entityCandidatePaths(entity)
-        if (candidates.length === 0) return true
-        return !candidates.some((candidate) => canonicalFileMap.has(candidate.toLowerCase()))
+        if (candidates.some((candidate) => canonicalFileMap.has(candidate.toLowerCase()))) return false
+        // Cross-type fuzzy match — catches cases where type was misclassified
+        if (matchEntityPath(name, allEntityPaths, true)) return false
+        return true
       })
 
       const hydrated = {
-        annotated_note: normalizeNestedWikilinks(autoLinkKnownMentions(parsed.annotated_note || linkedNoteContent, scopedAllowedFiles, linkableFolders)),
+        annotated_note: normalizeNestedWikilinks(linkedNoteContent),
         changes: hydratedChanges,
         unknown_entities: filteredUnknown,
       }

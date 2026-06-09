@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useMarkdownEditor } from '../hooks/useMarkdownEditor.jsx'
 import { useVoiceDictation } from '../hooks/useVoiceDictation'
 import TrashMenuButton from '../components/TrashMenuButton'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { extractTagsFromMarkdown, mergeTagsIntoIndex, parseTagsFromContent } from '../lib/tags'
 
 function splitTitleBody(markdown) {
@@ -57,8 +58,13 @@ export default function ProcessedNoteViewer({
   readFile,
   writeFile,
   deleteFile,
+  renameFile,
+  fileExists,
+  onWikilinkClick,
   onConfirmAction,
   onFileDeleted,
+  onFileRenamed,
+  wikilinkSuggestions,
 }) {
   const [title, setTitle] = useState('')
   const [editorBody, setEditorBody] = useState('')
@@ -67,8 +73,10 @@ export default function ProcessedNoteViewer({
   const [loading, setLoading] = useState(true)
   const [lastSavedTime, setLastSavedTime] = useState('')
   const [dictateHover, setDictateHover] = useState(false)
+  const [renameDialog, setRenameDialog] = useState(null) // { oldPath, newPath, oldSlug, newSlug }
   const saveTimer = useRef(null)
   const prevTranscript = useRef('')
+  const renamePending = useRef(false)
 
   const { EditorComponent, appendText } = useMarkdownEditor()
   const { isListening, isSupported, start, stop, transcript, reset } = useVoiceDictation()
@@ -153,6 +161,94 @@ export default function ProcessedNoteViewer({
     setEditorBody(newBody)
     setNoteTags(extractTagsFromMarkdown(`# ${title}\n\n${stripLeadingH1(newBody)}`))
     queueSave(newBody)
+  }
+
+  const isUntitledFile = () => {
+    const stem = (filePath || '').replace('notes/', '').replace(/\.md$/i, '')
+    return /^untitled/i.test(stem)
+  }
+
+  const isDateBasedFile = () => {
+    const stem = (filePath || '').replace('notes/', '').replace(/\.md$/i, '')
+    return /^\d{2}-\d{2}-\d{4}$/.test(stem)
+  }
+
+  const executeRename = async () => {
+    if (!renameDialog) return
+    const { oldPath, newPath, oldSlug, newSlug } = renameDialog
+    setRenameDialog(null)
+    try {
+      const isSlugCaseOnly = oldSlug.toLowerCase() === newSlug.toLowerCase()
+      if (!isSlugCaseOnly) {
+        try {
+          const exists = typeof fileExists === 'function' ? await fileExists(newPath) : false
+          if (exists) {
+            setTitle(oldSlug.replace(/-/g, ' '))
+            return
+          }
+        } catch {}
+      }
+      clearTimeout(saveTimer.current)
+      const full = title.trim() ? `# ${title.trim()}\n\n${stripLeadingH1(editorBody)}` : stripLeadingH1(editorBody)
+      await writeFile(newPath, full)
+      await deleteFile(oldPath)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('memostack:toast', {
+          detail: { message: `Renamed to ${newSlug}.md` },
+        }))
+      }
+      onFileRenamed?.(newPath)
+    } catch (err) {
+      console.error('Note rename failed:', err?.message || err)
+      setTitle(oldSlug.replace(/-/g, ' '))
+    }
+  }
+
+  const cancelRename = () => {
+    if (!renameDialog) return
+    setTitle(renameDialog.oldSlug.replace(/-/g, ' '))
+    setRenameDialog(null)
+  }
+
+  const renameToTitle = async (newTitle) => {
+    if (!filePath || !newTitle?.trim() || !isUntitledFile() || renamePending.current) return
+    const slug = newTitle.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    if (!slug) return
+    const newPath = `notes/${slug}.md`
+    if (newPath === filePath) return
+    renamePending.current = true
+    try {
+      const exists = typeof fileExists === 'function' ? await fileExists(newPath) : false
+      if (exists) return // don't clobber
+      clearTimeout(saveTimer.current)
+      const full = newTitle.trim() ? `# ${newTitle.trim()}\n\n${stripLeadingH1(editorBody)}` : stripLeadingH1(editorBody)
+      await writeFile(newPath, full)
+      await deleteFile(filePath)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('memostack:toast', {
+          detail: { message: `Renamed to ${slug}.md` },
+        }))
+      }
+      onFileRenamed?.(newPath)
+    } catch {
+      renamePending.current = false
+    }
+  }
+
+  const handleTitleBlur = () => {
+    if (!title.trim()) return
+    if (isUntitledFile()) {
+      renameToTitle(title)
+      return
+    }
+    if (isDateBasedFile()) return
+    // Non-date, non-untitled note: check if slug changed and offer rename
+    const stem = (filePath || '').replace('notes/', '').replace(/\.md$/i, '')
+    const newSlug = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    if (!newSlug || newSlug === stem.toLowerCase()) return
+    clearTimeout(saveTimer.current)
+    const newPath = `notes/${newSlug}.md`
+    setRenameDialog({ oldPath: filePath, newPath, oldSlug: stem, newSlug })
   }
 
   const handleTitleChange = (nextTitle) => {
@@ -308,11 +404,16 @@ export default function ProcessedNoteViewer({
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <div style={{ padding: '32px 48px 48px', maxWidth: 760 }}>
-          <input
-            type="text"
+          <textarea
             value={title}
-            onChange={(event) => handleTitleChange(event.target.value)}
+            onChange={(event) => {
+              handleTitleChange(event.target.value)
+              event.target.style.height = 'auto'
+              event.target.style.height = event.target.scrollHeight + 'px'
+            }}
+            onBlur={handleTitleBlur}
             placeholder="Untitled"
+            rows={1}
             style={{
               display: 'block',
               width: '100%',
@@ -326,14 +427,30 @@ export default function ProcessedNoteViewer({
               padding: 0,
               marginBottom: 20,
               fontFamily: 'inherit',
+              resize: 'none',
+              overflow: 'hidden',
+              lineHeight: 1.25,
+              minHeight: '1.25em',
             }}
+            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
           />
 
           <div key={filePath} className="milkdown-wrapper">
-            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} tagSuggestions={tagSuggestions} />
+            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={onWikilinkClick} tagSuggestions={tagSuggestions} wikilinkSuggestions={wikilinkSuggestions ?? []} />
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!renameDialog}
+        danger={false}
+        title="Rename note"
+        message={renameDialog ? `Renaming "${renameDialog.oldSlug}" to "${title.trim()}" will rename ${renameDialog.oldSlug}.md → ${renameDialog.newSlug}.md.` : ''}
+        confirmLabel="Rename"
+        cancelLabel="Cancel"
+        onConfirm={executeRename}
+        onCancel={cancelRename}
+      />
     </div>
   )
 }

@@ -513,18 +513,102 @@ function SummaryCard({ title, data, loading, canGenerate, onGenerate, placeholde
   )
 }
 
-function SummaryRow({ weekSummary, dailyUpdates, summaryLoading, updatesLoading, hasApiKey, onGenerateSummary, onGenerateUpdates }) {
+function formatRebuildTimestamp(timestamp) {
+  if (!timestamp) return null
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return null
+  const day = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(date)
+  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
+  return `updated ${day}, ${time}`
+}
+
+function ContextCard({ title, content, loading, placeholder, footer }) {
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: 12, minHeight: 180 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <h3
+          style={{
+            fontSize: 15.5,
+            fontWeight: 600,
+            color: 'var(--text)',
+            margin: '0 0 8px',
+            lineHeight: 1.3,
+            letterSpacing: '-0.005em',
+          }}
+        >
+          {title}
+        </h3>
+
+        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: loading ? 'var(--text-very-dim)' : 'var(--text-dim)', fontSize: 14, lineHeight: 1.6, flex: 1 }}>
+          {loading ? 'Rebuilding context…' : (content || placeholder)}
+        </pre>
+
+        {footer && (
+          <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{footer}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SummaryRow({
+  narrativeThread,
+  currentFocus,
+  contextLastRebuild,
+  contextLoading,
+  weekSummary,
+  dailyUpdates,
+  summaryLoading,
+  updatesLoading,
+  hasApiKey,
+  onGenerateSummary,
+  onGenerateUpdates,
+  onRebuildContext,
+}) {
   return (
     <section style={{ padding: '20px 48px 0' }}>
-      <SectionHeader label="Summaries" />
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <SummaryCard
-          title="Summary of the Week"
-          data={weekSummary}
-          loading={summaryLoading}
-          canGenerate={hasApiKey}
-          onGenerate={onGenerateSummary}
-          placeholder="No summary yet."
+      <SectionHeader
+        label="Summaries"
+        right={(
+          <button
+            type="button"
+            onClick={onRebuildContext}
+            disabled={!hasApiKey || contextLoading}
+            style={{
+              border: '1px solid var(--border)',
+              background: 'var(--panel-2)',
+              color: !hasApiKey || contextLoading ? 'var(--text-very-dim)' : 'var(--text-dim)',
+              borderRadius: 6,
+              padding: '4px 10px',
+              fontSize: 11,
+              cursor: !hasApiKey || contextLoading ? 'default' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            {contextLoading && (
+              <span style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px solid currentColor', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
+            )}
+            {contextLoading ? 'Rebuilding…' : 'Rebuild context'}
+          </button>
+        )}
+      />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+        <ContextCard
+          title="Narrative thread"
+          content={narrativeThread}
+          loading={contextLoading}
+          placeholder="Context not yet built — click Rebuild to generate."
+          footer={contextLoading ? 'Refreshing context…' : (formatRebuildTimestamp(contextLastRebuild) || 'never rebuilt')}
+        />
+        <ContextCard
+          title="Current focus"
+          content={currentFocus}
+          loading={contextLoading}
+          placeholder="No focus data yet."
         />
         <SummaryCard
           title="Updates"
@@ -545,6 +629,10 @@ export default function DashboardTop({
   stats,
   activityData,
   needsCall,
+  narrativeThread,
+  currentFocus,
+  contextLastRebuild,
+  contextLoading,
   weekSummary,
   dailyUpdates,
   summaryLoading,
@@ -552,6 +640,7 @@ export default function DashboardTop({
   hasApiKey,
   onGenerateSummary,
   onGenerateUpdates,
+  onRebuildContext,
   onResolveTask = async () => {},
   onDismissNeedsCall = async (id) => { console.log('dismiss', id) },
   onNeedsCallOrderChange = (items) => { console.log('reorder', items) },
@@ -575,6 +664,10 @@ export default function DashboardTop({
     summaries: () => (
       <div style={{ paddingBottom: 8 }}>
         <SummaryRow
+          narrativeThread={narrativeThread}
+          currentFocus={currentFocus}
+          contextLastRebuild={contextLastRebuild}
+          contextLoading={contextLoading}
           weekSummary={weekSummary}
           dailyUpdates={dailyUpdates}
           summaryLoading={summaryLoading}
@@ -582,6 +675,7 @@ export default function DashboardTop({
           hasApiKey={hasApiKey}
           onGenerateSummary={onGenerateSummary}
           onGenerateUpdates={onGenerateUpdates}
+          onRebuildContext={onRebuildContext}
         />
       </div>
     ),

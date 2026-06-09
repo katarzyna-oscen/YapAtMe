@@ -1,8 +1,18 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { rebuildContext } from '../lib/rebuildContext'
 import { migrateEntityTasks } from '../lib/migrateEntityTasks'
 import { cleanEntityFiles } from '../lib/cleanEntityFiles'
 import { callLLM, PROVIDERS } from '../lib/llm'
+import { PrimaryButton, SecondaryButton } from '../components/ui/Buttons'
+import { ensureWriterActionsSection } from '../lib/templates'
+import {
+  readTasksIndex,
+  countActiveTasksForModule,
+  countArchivedTasksForModule,
+  archiveTasksForModule,
+  unattachTasksForModule,
+  restoreArchivedTasksForModule,
+} from '../lib/tasksIndex'
 
 const DEFAULT_ENABLED_MODULES = {
   projects: true,
@@ -20,24 +30,12 @@ function restoreNoticeForModule(moduleId, moduleLabel) {
   return `${moduleLabel} restored - tasks are visible again.`
 }
 
-function ModuleDisableModal({ moduleLabel, onCancel, onDisable, onMigrateAndDisable }) {
-  const [migrating, setMigrating] = useState(false)
-  const [migrateResult, setMigrateResult] = useState(null)
-  const [migrateError, setMigrateError] = useState(false)
+function ModuleDisableModal({ moduleLabel, taskCount, onCancel, onArchive, onUnattach }) {
+  const [busy, setBusy] = useState(false)
 
-  const handleMigrateAndDisable = async () => {
-    setMigrating(true)
-    setMigrateResult(null)
-    setMigrateError(false)
-    try {
-      const result = await onMigrateAndDisable()
-      setMigrateResult(result)
-    } catch {
-      setMigrateError(true)
-      setMigrating(false)
-      return
-    }
-    setMigrating(false)
+  const handle = async (action) => {
+    setBusy(true)
+    try { await action() } finally { setBusy(false) }
   }
 
   return (
@@ -63,137 +61,180 @@ function ModuleDisableModal({ moduleLabel, onCancel, onDisable, onMigrateAndDisa
           boxShadow: '0 24px 48px rgba(0,0,0,0.35)',
         }}
       >
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
-            Disable {moduleLabel}?
-          </div>
-          <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.55 }}>
-            The <strong style={{ color: 'var(--text-secondary)' }}>{moduleLabel}</strong> module
-            contains task checkboxes (actions, delegations, decisions). Disabling it will hide
-            those sections from the dashboard. The data stays on disk, but tasks won't appear
-            until the module is re-enabled.
-          </div>
+        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)', marginBottom: 6 }}>
+          Disable {moduleLabel} module
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.55, marginBottom: 20 }}>
+          This module has <strong style={{ color: 'var(--text-secondary)' }}>{taskCount} active task{taskCount !== 1 ? 's' : ''}</strong>.
+          {' '}What should happen to them?
         </div>
 
-        <div
-          style={{
-            padding: '14px 16px',
-            background: 'var(--panel-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            marginBottom: 20,
-          }}
-        >
-          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 4 }}>
-            Migrate entity tasks to index
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5, marginBottom: 12 }}>
-            Moves task checkboxes from {moduleLabel.toLowerCase()} files into the central task
-            index before disabling. Safe to run multiple times - existing tasks are not duplicated.
-          </div>
-
-          {migrateResult && !migrateError && (
-            <div
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
+          {[
+            {
+              label: 'Archive tasks',
+              detail: 'Hide tasks from all views. You can restore them when you re-enable this module.',
+              action: onArchive,
+            },
+            {
+              label: 'Keep as unattached',
+              detail: 'Detach tasks from this module. They will remain visible in the Tasks page.',
+              action: onUnattach,
+            },
+          ].map(({ label, detail, action }) => (
+            <button
+              key={label}
+              onClick={() => handle(action)}
+              disabled={busy}
               style={{
-                padding: '8px 12px',
-                marginBottom: 10,
-                background: 'oklch(0.74 0.14 165 / 0.10)',
-                border: '1px solid oklch(0.74 0.14 165 / 0.30)',
-                borderRadius: 6,
-                fontSize: 12,
-                color: 'var(--text-dim)',
-                lineHeight: 1.6,
+                textAlign: 'left',
+                border: '1px solid var(--border)',
+                background: 'var(--panel-2)',
+                color: 'var(--text)',
+                borderRadius: 8,
+                padding: '11px 12px',
+                cursor: busy ? 'not-allowed' : 'pointer',
+                opacity: busy ? 0.6 : 1,
+                fontFamily: 'inherit',
               }}
             >
-              ✓ Done - {migrateResult.migrated} task{migrateResult.migrated !== 1 ? 's' : ''} migrated,{' '}
-              {migrateResult.skipped} already in index,{' '}
-              {migrateResult.filesUpdated} file{migrateResult.filesUpdated !== 1 ? 's' : ''} updated,
-              {' '}index: {migrateResult.indexCountBefore ?? 0}{' -> '}{migrateResult.indexCountAfter ?? 0}
-            </div>
-          )}
-
-          {migrateError && (
-            <div
-              style={{
-                padding: '8px 12px',
-                marginBottom: 10,
-                background: 'oklch(0.65 0.2 25 / 0.10)',
-                border: '1px solid oklch(0.65 0.2 25 / 0.30)',
-                borderRadius: 6,
-                fontSize: 12,
-                color: 'var(--danger)',
-              }}
-            >
-              Migration failed. Check the console for details.
-            </div>
-          )}
-
-          <button
-            onClick={handleMigrateAndDisable}
-            disabled={migrating || !!migrateResult}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '7px 14px',
-              background: migrateResult ? 'oklch(0.74 0.14 165 / 0.12)' : 'var(--accent)',
-              color: migrateResult ? 'oklch(0.74 0.14 165)' : '#fff',
-              border: 'none',
-              borderRadius: 7,
-              fontSize: 12.5,
-              fontWeight: 500,
-              cursor: migrating || !!migrateResult ? 'default' : 'pointer',
-              fontFamily: 'inherit',
-              opacity: migrating ? 0.6 : 1,
-              transition: 'opacity .12s',
-            }}
-          >
-            {migrating
-              ? 'Migrating…'
-              : migrateResult
-                ? 'Migration complete - closing…'
-                : 'Migrate & Disable'}
-          </button>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>{label}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.4 }}>{detail}</div>
+            </button>
+          ))}
         </div>
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button
-            onClick={onCancel}
-            disabled={migrating}
-            style={{
-              padding: '8px 16px',
-              background: 'transparent',
-              color: 'var(--text-dim)',
-              border: '1px solid var(--border)',
-              borderRadius: 7,
-              fontSize: 13,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              opacity: migrating ? 0.4 : 1,
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onDisable}
-            disabled={migrating}
-            style={{
-              padding: '8px 16px',
-              background: 'var(--panel-2)',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--border)',
-              borderRadius: 7,
-              fontSize: 13,
-              cursor: migrating ? 'default' : 'pointer',
-              fontFamily: 'inherit',
-              opacity: migrating ? 0.4 : 1,
-            }}
-          >
-            Disable without migrating
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <SecondaryButton onClick={onCancel} disabled={busy}>Cancel</SecondaryButton>
         </div>
       </div>
     </div>
+  )
+}
+
+function FieldLabel({ children }) {
+  return (
+    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, letterSpacing: '0.04em', color: 'var(--text-dim)', marginBottom: 8 }}>
+      {children}
+    </label>
+  )
+}
+
+function StyledInput({ type = 'text', value, onChange, placeholder, mono }) {
+  const [focus, setFocus] = useState(false)
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      onFocus={() => setFocus(true)}
+      onBlur={() => setFocus(false)}
+      style={{
+        width: '100%', padding: '10px 12px',
+        background: 'var(--panel)', color: 'var(--text)',
+        border: `1px solid ${focus ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 8, fontSize: 13.5, fontFamily: mono ? 'var(--font-mono)' : 'inherit',
+        outline: 'none', transition: 'border-color .12s',
+      }}
+    />
+  )
+}
+
+function StyledSelect({ value, onChange, options }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const current = options.find((o) => o.value === value) || options[0]
+
+  useEffect(() => {
+    if (!open) return
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [open])
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          width: '100%', padding: '10px 12px',
+          background: 'var(--panel)', color: 'var(--text)',
+          border: `1px solid ${open ? 'var(--border-strong)' : 'var(--border)'}`,
+          borderRadius: 8, fontSize: 13.5, fontFamily: 'inherit',
+          outline: 'none', transition: 'border-color .12s', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          textAlign: 'left',
+        }}
+      >
+        <span>{current?.label ?? ''}</span>
+        <svg viewBox="0 0 10 10" width="10" height="10" fill="currentColor" style={{
+          opacity: 0.55, color: 'var(--text-dim)', flex: '0 0 10px',
+          transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+          transition: 'transform .15s',
+        }}>
+          <path d="M1 3 L5 7 L9 3 Z" />
+        </svg>
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 50,
+          padding: 4, background: 'var(--panel-pop)',
+          border: '1px solid var(--border)', borderRadius: 10,
+          boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)',
+        }}>
+          {options.map((o) => {
+            const active = o.value === value
+            return (
+              <div
+                key={o.value}
+                onClick={() => { onChange(o.value); setOpen(false) }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '8px 10px', borderRadius: 6, cursor: 'pointer',
+                  fontSize: 13, color: active ? 'var(--text)' : 'var(--text-dim)',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--panel-2)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              >
+                <span style={{ flex: 1 }}>{o.label}</span>
+                {active && <span style={{ color: 'var(--text-very-dim)' }}>✓</span>}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ActionCard({ title, description, footnote, children }) {
+  return (
+    <div style={{ padding: '18px 20px', background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 14 }}>
+      <h3 style={{ margin: '0 0 6px', fontSize: 14, fontWeight: 600, color: 'var(--text)', letterSpacing: '-0.005em' }}>{title}</h3>
+      {description && <p style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.55, color: 'var(--text-dim)', textWrap: 'pretty' }}>{description}</p>}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{children}</div>
+      {footnote && <div style={{ marginTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)' }}>{footnote}</div>}
+    </div>
+  )
+}
+
+function SettingsCheckbox({ checked }) {
+  return (
+    <span style={{
+      width: 18, height: 18, borderRadius: 4,
+      border: '1.5px solid', borderColor: checked ? 'var(--accent)' : 'var(--border-strong)',
+      background: checked ? 'var(--accent)' : 'transparent',
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      color: '#1a1408', flexShrink: 0,
+    }}>
+      {checked && (
+        <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.4">
+          <path d="m3 8 3.5 3.5L13 5" />
+        </svg>
+      )}
+    </span>
   )
 }
 
@@ -292,12 +333,21 @@ function DashboardSectionConfig({ value, onChange }) {
               {def.label}
             </span>
             {/* Visibility toggle */}
-            <input
-              type="checkbox"
-              checked={visible}
-              onChange={() => toggleVisible(id)}
-              className="h-4 w-4 accent-[var(--accent)]"
-            />
+            <button
+              type="button"
+              onClick={() => toggleVisible(id)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0,
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              <SettingsCheckbox checked={visible} />
+            </button>
           </div>
         )
       })}
@@ -313,9 +363,11 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
     apiKey:   settings.apiKey   || '',
     model:    settings.model    || 'meta-llama/llama-3.3-70b-instruct',
     provider: settings.provider || 'openrouter',
+    writerFile: settings.writerFile || '',
     enabledModules: settings.enabledModules || DEFAULT_ENABLED_MODULES,
     dashboardSections: settings.dashboardSections || {},
   })
+  const [peopleWriterOptions, setPeopleWriterOptions] = useState([])
   const [saved, setSaved] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
   const [rebuildStatus, setRebuildStatus] = useState(null)
@@ -336,10 +388,50 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
       apiKey: settings.apiKey || '',
       model: settings.model || 'meta-llama/llama-3.3-70b-instruct',
       provider: settings.provider || 'openrouter',
+      writerFile: settings.writerFile || '',
       enabledModules: settings.enabledModules || DEFAULT_ENABLED_MODULES,
       dashboardSections: settings.dashboardSections || {},
     })
   }, [settings])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadPeopleOptions = async () => {
+      try {
+        const tree = await listTree()
+        const peopleDir = Array.isArray(tree)
+          ? (tree.find((entry) => entry?.kind === 'directory' && entry.name === 'people')?.children || [])
+          : (tree?.people || [])
+        const options = (peopleDir || [])
+          .filter((entry) => entry?.kind === 'file' && String(entry.name || '').endsWith('.md'))
+          .map((entry) => {
+            const path = entry.path || `people/${entry.name}`
+            const label = String(entry.name || '').replace(/\.md$/i, '').replace(/-/g, ' ')
+            return { value: path, label }
+          })
+          .sort((a, b) => a.label.localeCompare(b.label))
+        if (!cancelled) setPeopleWriterOptions(options)
+      } catch {
+        if (!cancelled) setPeopleWriterOptions([])
+      }
+    }
+    loadPeopleOptions()
+    return () => { cancelled = true }
+  }, [listTree])
+
+  const ensureWriterSectionIfNeeded = async (writerFile) => {
+    const target = String(writerFile || '').trim()
+    if (!target) return
+    try {
+      const raw = await readFile(target)
+      const next = ensureWriterActionsSection(raw)
+      if (next !== raw) {
+        await writeFile(target, next)
+      }
+    } catch (err) {
+      console.warn('Failed to ensure writer actions section:', err?.message || err)
+    }
+  }
 
   const handleSave = async () => {
     await saveSettings(form)
@@ -355,7 +447,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
     setRebuilding(true)
     setRebuildStatus(null)
     try {
-      await rebuildContext(readFile, writeFile, settings)
+      await rebuildContext(readFile, writeFile, settings, listTree)
       setRebuildStatus('ok')
     } catch {
       setRebuildStatus('error')
@@ -412,15 +504,38 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
 
   const handleModuleToggle = async (moduleId, moduleLabel, currentlyEnabled) => {
     if (!currentlyEnabled) {
+      // Re-enabling: restore archived tasks if any, then enable
       await commitModuleToggle(moduleId, true)
       if (MODULES_WITH_TASKS.has(moduleId)) {
-        setModuleRestoreNotice(restoreNoticeForModule(moduleId, moduleLabel))
-        setTimeout(() => setModuleRestoreNotice(''), 2400)
+        try {
+          const entries = await readTasksIndex(readFile)
+          const archivedCount = countArchivedTasksForModule(entries, moduleId)
+          if (archivedCount > 0) {
+            await restoreArchivedTasksForModule(readFile, writeFile, moduleId)
+            setModuleRestoreNotice(`Restored ${archivedCount} archived task${archivedCount !== 1 ? 's' : ''} for ${moduleLabel}.`)
+          } else {
+            setModuleRestoreNotice(restoreNoticeForModule(moduleId, moduleLabel))
+          }
+        } catch {
+          setModuleRestoreNotice(restoreNoticeForModule(moduleId, moduleLabel))
+        }
+        setTimeout(() => setModuleRestoreNotice(''), 3500)
       }
       return
     }
     if (MODULES_WITH_TASKS.has(moduleId)) {
-      setPendingDisable({ id: moduleId, label: moduleLabel })
+      // Count active tasks — show dialog only if there are tasks to handle
+      try {
+        const entries = await readTasksIndex(readFile)
+        const activeCount = countActiveTasksForModule(entries, moduleId)
+        if (activeCount === 0) {
+          await commitModuleToggle(moduleId, false)
+          return
+        }
+        setPendingDisable({ id: moduleId, label: moduleLabel, taskCount: activeCount })
+      } catch {
+        setPendingDisable({ id: moduleId, label: moduleLabel, taskCount: 0 })
+      }
       return
     }
     await commitModuleToggle(moduleId, false)
@@ -428,34 +543,28 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
 
   const handleModalCancel = () => setPendingDisable(null)
 
-  const handleModalDisable = async () => {
+  const handleArchiveAndDisable = async () => {
+    await archiveTasksForModule(readFile, writeFile, pendingDisable.id)
     await commitModuleToggle(pendingDisable.id, false)
     setPendingDisable(null)
   }
 
-  const handleMigrateAndDisable = async () => {
-    const result = await migrateEntityTasks({ readFile, writeFile, listTree })
+  const handleUnattachAndDisable = async () => {
+    await unattachTasksForModule(readFile, writeFile, pendingDisable.id)
     await commitModuleToggle(pendingDisable.id, false)
-    setMigrateResult(result)
-    setTimeout(() => setPendingDisable(null), 1500)
-    return result
-  }
-
-  const inputStyle = {
-    background: 'var(--bg-input)',
-    border: '1px solid var(--border)',
-    color: 'var(--text-primary)',
+    setPendingDisable(null)
   }
 
   return (
     <>
-      {/* Module disable modal — unchanged */}
+      {/* Module disable modal */}
       {pendingDisable && (
         <ModuleDisableModal
           moduleLabel={pendingDisable.label}
+          taskCount={pendingDisable.taskCount ?? 0}
           onCancel={handleModalCancel}
-          onDisable={handleModalDisable}
-          onMigrateAndDisable={handleMigrateAndDisable}
+          onArchive={handleArchiveAndDisable}
+          onUnattach={handleUnattachAndDisable}
         />
       )}
 
@@ -463,20 +572,21 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
 
         {/* ── Left nav ───────────────────────────────────────────────── */}
         <nav style={{
-          width: 200,
+          width: 220,
           flexShrink: 0,
-          padding: '32px 0 32px',
+          padding: '28px 14px',
           borderRight: '1px solid var(--border-subtle)',
           overflowY: 'auto',
           display: 'flex',
           flexDirection: 'column',
           gap: 2,
         }}>
-          <div style={{ padding: '0 20px 16px', fontSize: 11, fontWeight: 600,
-            letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-very-dim)' }}>
+          <div style={{ padding: '0 10px', marginBottom: 14, fontSize: 11, fontWeight: 600,
+            letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text-very-dim)' }}>
             Settings
           </div>
           {[
+            { id: 'you',         label: 'You' },
             { id: 'ai',          label: 'AI Setup' },
             { id: 'vault',       label: 'Vault Maintenance' },
             { id: 'modules',     label: 'Modules' },
@@ -490,32 +600,23 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 20px',
+                  gap: 8,
+                  padding: '8px 14px',
                   background: active ? 'var(--panel-2)' : 'transparent',
-                  color: active ? 'var(--text)' : 'var(--text-dim)',
+                  color: active ? 'var(--active)' : 'var(--text-dim)',
                   border: 'none',
-                  borderRadius: 0,
-                  fontSize: 13,
+                  borderRadius: 7,
+                  fontSize: 13.5,
                   fontWeight: active ? 500 : 400,
                   cursor: 'pointer',
                   fontFamily: 'inherit',
                   textAlign: 'left',
                   width: '100%',
                   transition: 'background .12s, color .12s',
-                  position: 'relative',
                 }}
-                onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--panel)' }}
-                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
+                onMouseEnter={e => { if (!active) { e.currentTarget.style.background = 'var(--panel-2)'; e.currentTarget.style.color = 'var(--text)'; } }}
+                onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-dim)'; } }}
               >
-                {/* Active indicator bar */}
-                {active && (
-                  <span style={{
-                    position: 'absolute', left: 0, top: '20%', bottom: '20%',
-                    width: 2, borderRadius: 1,
-                    background: 'var(--accent)',
-                  }} />
-                )}
                 {label}
               </button>
             )
@@ -524,78 +625,160 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
 
         {/* ── Content area ───────────────────────────────────────────── */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '32px 48px 64px' }}>
+          {/* ── You ───────────────────────────────────────────────── */}
+          {activeSection === 'you' && (
+            <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', margin: 0, color: 'var(--text)' }}>
+                You
+              </h1>
 
+              <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, color: 'var(--text-dim)', maxWidth: 640 }}>
+                Tell Memory OS who you are so it can route first-person actions to your file and personalise note processing.
+              </p>
+
+              {form.writerFile ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 14,
+                    padding: '14px 16px',
+                    background: 'var(--panel-2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 10,
+                  }}>
+                    <div style={{
+                      width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                      background: 'oklch(0.70 0.18 22 / 0.16)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 17, fontWeight: 600, color: 'oklch(0.84 0.16 22)',
+                    }}>
+                      {(peopleWriterOptions.find(o => o.value === form.writerFile)?.label || form.writerFile)
+                        .charAt(0).toUpperCase()}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
+                        {peopleWriterOptions.find(o => o.value === form.writerFile)?.label ||
+                          form.writerFile.replace('people/', '').replace('.md', '').replace(/-/g, ' ')}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-very-dim)', marginTop: 1 }}>
+                        {form.writerFile}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <FieldLabel>Change identity</FieldLabel>
+                    <StyledSelect
+                      value={form.writerFile || ''}
+                      onChange={async (value) => {
+                        const nextForm = { ...form, writerFile: value }
+                        setForm(nextForm)
+                        await saveSettings(nextForm)
+                        await ensureWriterSectionIfNeeded(value)
+                      }}
+                      options={[
+                        { value: '', label: 'Not set' },
+                        ...peopleWriterOptions,
+                      ]}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{
+                    padding: '14px 16px',
+                    background: 'oklch(0.90 0.12 80 / 0.06)',
+                    border: '1px solid oklch(0.90 0.12 80 / 0.20)',
+                    borderRadius: 10,
+                    fontSize: 13.5,
+                    color: 'var(--text-dim)',
+                    lineHeight: 1.5,
+                  }}>
+                    Set your name so Memory OS knows who you are
+                  </div>
+                  <div className="space-y-2">
+                    <FieldLabel>Select your person file</FieldLabel>
+                    {peopleWriterOptions.length === 0 ? (
+                      <p style={{ fontSize: 13, color: 'var(--text-very-dim)', margin: 0 }}>
+                        No people files found. Create a person entry first.
+                      </p>
+                    ) : (
+                      <StyledSelect
+                        value={form.writerFile || ''}
+                        onChange={async (value) => {
+                          const nextForm = { ...form, writerFile: value }
+                          setForm(nextForm)
+                          await saveSettings(nextForm)
+                          await ensureWriterSectionIfNeeded(value)
+                        }}
+                        options={[
+                          { value: '', label: 'Choose your name…' },
+                          ...peopleWriterOptions,
+                        ]}
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {/* ── AI Setup ─────────────────────────────────────────────── */}
           {activeSection === 'ai' && (
-            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+            <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', margin: 0, color: 'var(--text)' }}>
                 AI Setup
               </h1>
 
-              <div className="space-y-2">
-                <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
-                  Provider
-                </label>
-                <select
-                  value={form.provider}
-                  onChange={e => updateAiField({ provider: e.target.value })}
-                  className="w-full px-3 py-2 rounded text-sm"
-                  style={inputStyle}
-                >
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="ollama">Ollama (local)</option>
-                </select>
-              </div>
+              <p style={{ margin: '0 0 28px', fontSize: 14, lineHeight: 1.55, color: 'var(--text-dim)', maxWidth: 640, textWrap: 'pretty' }}>
+                Choose the model provider and credentials Memory OS uses to process inbox notes, generate summaries, and route tasks.
+              </p>
 
               <div className="space-y-2">
-                <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
-                  API Key
-                </label>
-                <input
-                  type="password"
-                  value={form.apiKey}
-                  onChange={e => updateAiField({ apiKey: e.target.value })}
-                  placeholder="sk-or-…"
-                  className="w-full px-3 py-2 rounded text-sm font-mono"
-                  style={inputStyle}
+                <FieldLabel>Provider</FieldLabel>
+                <StyledSelect
+                  value={form.provider}
+                  onChange={value => updateAiField({ provider: value })}
+                  options={[
+                    { value: 'openrouter', label: 'OpenRouter' },
+                    { value: 'anthropic', label: 'Anthropic' },
+                    { value: 'openai', label: 'OpenAI' },
+                    { value: 'ollama', label: 'Ollama (local)' },
+                  ]}
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm block" style={{ color: 'var(--text-secondary)' }}>
-                  Model
-                </label>
-                <input
+                <FieldLabel>API Key</FieldLabel>
+                <StyledInput
+                  type="password"
+                  value={form.apiKey}
+                  onChange={value => updateAiField({ apiKey: value })}
+                  placeholder="sk-or-…"
+                  mono
+                />
+              </div>
+
+              <div className="space-y-2">
+                <FieldLabel>Model</FieldLabel>
+                <StyledInput
                   type="text"
                   value={form.model}
-                  onChange={e => updateAiField({ model: e.target.value })}
+                  onChange={value => updateAiField({ model: value })}
                   placeholder="meta-llama/llama-3.3-70b-instruct"
-                  className="w-full px-3 py-2 rounded text-sm font-mono"
-                  style={inputStyle}
+                  mono
                 />
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <button
-                  onClick={handleSave}
-                  className="px-4 py-2 rounded text-sm text-white transition-opacity hover:opacity-90"
-                  style={{ background: 'var(--accent)' }}
-                >
+                <PrimaryButton onClick={handleSave}>
                   {saved ? 'Saved ✓' : 'Save Settings'}
-                </button>
-                <button
+                </PrimaryButton>
+                <SecondaryButton
                   onClick={handleTestConnection}
                   disabled={testingConnection}
-                  className="px-4 py-2 rounded text-sm transition-colors"
-                  style={{
-                    border: '1px solid var(--border)',
-                    color: testingConnection ? 'var(--text-muted)' : 'var(--text-secondary)',
-                  }}
                 >
                   {testingConnection ? 'Testing…' : 'Test API Connection'}
-                </button>
+                </SecondaryButton>
                 {connectionStatus === 'ok' && (
                   <span className="text-xs" style={{ color: 'var(--success)' }}>
                     Connected: {connectionMessage}
@@ -607,65 +790,45 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                   </span>
                 )}
               </div>
+
             </div>
           )}
 
           {/* ── Vault Maintenance ────────────────────────────────────── */}
           {activeSection === 'vault' && (
-            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+            <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', margin: 0, color: 'var(--text)' }}>
                 Vault Maintenance
               </h1>
 
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                If the app loses access to your vault folder after a page reload,
-                reload the page to reconnect.
-              </p>
-              <button
-                onClick={() => window.location.reload()}
-                className="px-4 py-2 rounded text-sm transition-colors"
-                style={{ border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+              <ActionCard
+                title="Reconnect vault"
+                description="If the app loses access to your vault folder after a page reload, reload the page to reconnect."
               >
-                Reconnect Vault
-              </button>
+                <PrimaryButton onClick={() => window.location.reload()}>
+                  Reconnect vault
+                </PrimaryButton>
+              </ActionCard>
 
-              <hr style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: 0 }} />
-
-              <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-                Rebuilds <span className="font-mono">context/_context.md</span> from the current vault state.
-                Run this if the context looks stale or after making manual edits to vault files.
-              </p>
-              <div className="flex items-center gap-3">
-                <button
+              <ActionCard
+                title="Rebuild context"
+                description="Rebuilds context/_context.md from the current vault state. Run this if the context looks stale or after making manual edits to vault files."
+              >
+                <PrimaryButton
                   onClick={handleRebuildContext}
-                  disabled={rebuilding || !settings?.apiKey}
-                  className="px-4 py-2 bg-[var(--panel-2)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40 transition-colors"
+                  disabled={!settings?.apiKey}
+                  loading={rebuilding}
                 >
-                  {rebuilding ? 'Rebuilding…' : 'Rebuild Context'}
-                </button>
+                  Rebuild context
+                </PrimaryButton>
                 {rebuildStatus === 'ok' && <span className="text-xs text-[var(--success)]">Context updated</span>}
                 {rebuildStatus === 'error' && <span className="text-xs text-[var(--danger)]">Failed - check API key</span>}
-              </div>
+              </ActionCard>
 
-              <hr style={{ border: 'none', borderTop: '1px solid var(--border-subtle)', margin: 0 }} />
-
-              <div
-                style={{
-                  padding: '16px 18px',
-                  background: 'var(--panel)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  marginBottom: 12,
-                }}
+              <ActionCard
+                title="Migrate entity tasks"
+                description="Moves task checkboxes from project and people files into the central task index. Safe to run multiple times - existing tasks are not duplicated."
               >
-                <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>
-                  Migrate entity tasks to index
-                </div>
-                <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 14, lineHeight: 1.5 }}>
-                  Moves task checkboxes from project and people files into the central task index.
-                  Safe to run multiple times - existing tasks are not duplicated.
-                </div>
-
                 {migrateResult && (
                   <div
                     style={{
@@ -686,7 +849,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                   </div>
                 )}
 
-                <button
+                <SecondaryButton
                   onClick={async () => {
                     if (migrating) return
                     setMigrating(true)
@@ -701,50 +864,15 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                     }
                   }}
                   disabled={migrating}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '8px 16px',
-                    background: 'var(--panel-2)',
-                    color: migrating ? 'var(--text-very-dim)' : 'var(--text-dim)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 7,
-                    fontSize: 13,
-                    cursor: migrating ? 'default' : 'pointer',
-                    fontFamily: 'inherit',
-                    transition: 'background .12s, color .12s',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!migrating) {
-                      e.currentTarget.style.background = 'var(--panel-pop)'
-                      e.currentTarget.style.color = 'var(--text)'
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'var(--panel-2)'
-                    e.currentTarget.style.color = migrating ? 'var(--text-very-dim)' : 'var(--text-dim)'
-                  }}
                 >
                   {migrating ? 'Migrating…' : 'Run migration'}
-                </button>
-              </div>
+                </SecondaryButton>
+              </ActionCard>
 
-              <div
-                style={{
-                  padding: '16px 18px',
-                  background: 'var(--panel)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                }}
+              <ActionCard
+                title="Clean entity files"
+                description="Removes legacy task and other non-schema sections from project and people files while keeping approved sections intact."
               >
-                <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>
-                  Clean entity files
-                </div>
-                <div style={{ fontSize: 12.5, color: 'var(--text-dim)', marginBottom: 14, lineHeight: 1.5 }}>
-                  Removes legacy task and other non-schema sections from project and people files while keeping approved sections intact.
-                </div>
-
                 {cleanResult && (
                   <div
                     style={{
@@ -764,7 +892,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                   </div>
                 )}
 
-                <button
+                <SecondaryButton
                   onClick={async () => {
                     if (cleaning) return
                     setCleaning(true)
@@ -779,41 +907,18 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                     }
                   }}
                   disabled={cleaning}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '8px 16px',
-                    background: 'var(--panel-2)',
-                    color: cleaning ? 'var(--text-very-dim)' : 'var(--text-dim)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 7,
-                    fontSize: 13,
-                    cursor: cleaning ? 'default' : 'pointer',
-                    fontFamily: 'inherit',
-                    transition: 'background .12s, color .12s',
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!cleaning) {
-                      e.currentTarget.style.background = 'var(--panel-pop)'
-                      e.currentTarget.style.color = 'var(--text)'
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'var(--panel-2)'
-                    e.currentTarget.style.color = cleaning ? 'var(--text-very-dim)' : 'var(--text-dim)'
-                  }}
+                  danger
                 >
                   {cleaning ? 'Cleaning…' : 'Clean entity files'}
-                </button>
-              </div>
+                </SecondaryButton>
+              </ActionCard>
             </div>
           )}
 
           {/* ── Modules ──────────────────────────────────────────────── */}
           {activeSection === 'modules' && (
-            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+            <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', margin: 0, color: 'var(--text)' }}>
                 Modules
               </h1>
 
@@ -849,6 +954,9 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                     <label
                       key={moduleDef.id}
                       className="flex items-center justify-between px-3 py-2 rounded border border-[var(--border)] bg-[var(--bg-input)] cursor-pointer"
+                      onClick={() => {
+                        void handleModuleToggle(moduleDef.id, moduleDef.label, enabled)
+                      }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
@@ -860,14 +968,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                           </span>
                         )}
                       </div>
-                      <input
-                        type="checkbox"
-                        checked={enabled}
-                        onChange={() => {
-                          void handleModuleToggle(moduleDef.id, moduleDef.label, enabled)
-                        }}
-                        className="h-4 w-4 accent-[var(--accent)]"
-                      />
+                      <SettingsCheckbox checked={enabled} />
                     </label>
                   )
                 })}
@@ -877,8 +978,8 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
 
           {/* ── Dashboard ────────────────────────────────────────────── */}
           {activeSection === 'dashboard' && (
-            <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 28 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0, color: 'var(--text)' }}>
+            <div style={{ maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 28 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', margin: 0, color: 'var(--text)' }}>
                 Dashboard
               </h1>
 

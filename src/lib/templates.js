@@ -18,6 +18,15 @@ export function toSlug(name) {
   return slug.charAt(0).toUpperCase() + slug.slice(1)
 }
 
+export const WRITER_ACTIONS_SECTION = '## My Actions'
+
+export function ensureWriterActionsSection(content) {
+  const raw = String(content || '')
+  if (!raw.trim()) return raw
+  if (/^##\s+My Actions\b/im.test(raw)) return raw
+  return `${raw.trimEnd()}\n\n${WRITER_ACTIONS_SECTION}\n_Personal actions routed from first-person notes._\n`
+}
+
 // Folders that get a + button
 export const PLUS_FOLDERS = new Set(['inbox', 'projects', 'people', 'ideas', 'notes', 'archive'])
 
@@ -25,7 +34,7 @@ export function hasPlus(folderName) {
   return PLUS_FOLDERS.has(folderName.toLowerCase())
 }
 
-export function generateFile(folder, name) {
+export function generateFile(folder, name, options = {}) {
   const today = todayISO()
   const slug  = toSlug(name) || 'Untitled'
 
@@ -61,14 +70,16 @@ _Observations, raw thoughts, context. AI will use this to keep the project curre
       }
 
     case 'people':
+      const relationship = String(options.relationship || '').trim()
+      const role = String(options.role || '').trim()
       return {
         slug,
         content:
 `---
 type: person
 full_name: ${name}
-relationship: 
-role: 
+relationship: ${relationship}
+role: ${role}
 last_updated: ${today}
 ---
 

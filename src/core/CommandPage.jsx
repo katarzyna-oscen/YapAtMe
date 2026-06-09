@@ -2,11 +2,14 @@ import { useState, useEffect, useCallback } from 'react'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { readTasksIndex } from '../lib/tasksIndex'
 import { callLLM } from '../lib/llm'
+import { rebuildContext } from '../lib/rebuildContext'
 import DashboardTop from './dashboard-top'
 import DashboardSections from './dashboard-sections'
 
 const WEEK_SUMMARY_PATH = 'context/week-summary.json'
 const DAILY_UPDATES_PATH = 'context/daily-updates.json'
+const CONTEXT_PATH = 'context/_context.md'
+const ACTIVITY_LOG_PATH = 'context/activity-log.json'
 const STALE_PROJECT_DAYS = 21
 const LAPSED_PERSON_DAYS = 28
 const CADENCE_WINDOW_DAYS = 30
@@ -39,6 +42,13 @@ async function readFrontmatters(readFile, files, folder) {
       }
     })
   )
+}
+
+function extractContextSection(markdown, heading) {
+  const text = String(markdown || '')
+  const match = text.match(new RegExp(`^##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|$)`, 'im'))
+  const section = match?.[1]?.trim() || ''
+  return section || null
 }
 
 export function applyOrder(items, storedIds, getKey) {
@@ -120,6 +130,26 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
   const [dailyUpdates, setDailyUpdates]     = useState(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [updatesLoading, setUpdatesLoading] = useState(false)
+  const [contextNarrative, setContextNarrative] = useState(null)
+  const [contextFocus, setContextFocus] = useState(null)
+  const [contextLastRebuild, setContextLastRebuild] = useState(null)
+  const [contextLoading, setContextLoading] = useState(false)
+
+  const loadContextSnapshot = useCallback(async () => {
+    let contextMarkdown = ''
+    let lastRebuild = null
+
+    try { contextMarkdown = await readFile(CONTEXT_PATH) } catch {}
+    try {
+      const raw = await readFile(ACTIVITY_LOG_PATH)
+      const parsed = JSON.parse(raw)
+      lastRebuild = parsed?.last_rebuild || null
+    } catch {}
+
+    setContextNarrative(extractContextSection(contextMarkdown, 'Narrative thread'))
+    setContextFocus(extractContextSection(contextMarkdown, 'Current focus'))
+    setContextLastRebuild(lastRebuild)
+  }, [readFile])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -194,12 +224,13 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
 
       setWeekSummary(savedSummary)
       setDailyUpdates(savedUpdates)
+      await loadContextSnapshot()
     } catch (err) {
       console.error('Dashboard load failed:', err)
     } finally {
       setLoading(false)
     }
-  }, [readFile, listTree, settings?.dashboardOrder, settings?.tasksOrder])
+  }, [readFile, listTree, settings?.dashboardOrder, settings?.tasksOrder, loadContextSnapshot])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -239,6 +270,19 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
       setSummaryLoading(false)
     }
   }
+
+  const handleRebuildContext = useCallback(async () => {
+    if (!settings?.apiKey) return
+    setContextLoading(true)
+    try {
+      await rebuildContext(readFile, writeFile, settings, listTree)
+      await loadContextSnapshot()
+    } catch (err) {
+      console.error('Context rebuild failed:', err)
+    } finally {
+      setContextLoading(false)
+    }
+  }, [readFile, writeFile, settings, loadContextSnapshot])
 
   const handleGenerateUpdates = async () => {
     if (!settings?.apiKey) return
@@ -322,6 +366,10 @@ Instructions:
         stats={stats}
         activityData={activityData}
         needsCall={needsCall}
+        narrativeThread={contextNarrative}
+        currentFocus={contextFocus}
+        contextLastRebuild={contextLastRebuild}
+        contextLoading={contextLoading}
         weekSummary={weekSummary}
         dailyUpdates={dailyUpdates}
         summaryLoading={summaryLoading}
@@ -329,6 +377,7 @@ Instructions:
         hasApiKey={!!settings?.apiKey}
         onGenerateSummary={handleGenerateSummary}
         onGenerateUpdates={handleGenerateUpdates}
+        onRebuildContext={handleRebuildContext}
         onResolveTask={handleResolveTask}
         onNavigate={setPage}
         sectionConfig={settings?.dashboardSections || {}}
