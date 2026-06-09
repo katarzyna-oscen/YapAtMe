@@ -596,3 +596,137 @@ All settings section containers widened from `maxWidth: 520` → `maxWidth: 640`
 | `src/components/ui/Buttons.jsx` | `PrimaryButton` loading state shows spinner SVG |
 | `handovers/HANDOVER_H10_styling_audit.md` | New handover filed |
 
+---
+
+## Session update — 2026-06-09
+
+### Sidebar rename (all entity types)
+
+Added inline rename support for Notes, Projects, People, and Ideas from the sidebar context menu. Inbox is excluded.
+
+**`src/components/Sidebar.jsx`:**
+- `SidebarSection` accepts `onRenameFile` prop.
+- Right-click context menu gains a "Rename" item for all non-inbox sections.
+- Activating rename replaces the file label with an inline `<input>`, auto-focused.
+- **Enter** or blur commits; **Escape** cancels. A `renameHandledRef` prevents double-fire when Enter triggers both `keydown` and `blur`.
+- Date-based filenames (`DD-MM-YYYY`) preserve hyphens in sidebar labels; other stems get humanized (hyphens→spaces, title-case) as before.
+
+**`src/App.jsx` — `handleSidebarRename`:**
+- Computes new slug via `toSlug`, checks for collision via `fileExists`.
+- Reads the old file, updates the relevant frontmatter field (`full_name` for people, `name` for projects) or H1 line for notes.
+- Writes the new path, deletes the old path.
+- For people/projects: retargets tasks via `retargetTasksForFile`, updates context index files, calls `invalidateFileIndex`.
+- Calls `setActiveFile(newPath)` if the renamed file was open, then `refreshTree`.
+
+**`src/core/ProcessedNoteViewer.jsx`:**
+- Non-date notes: editing the H1 title and blurring triggers a `ConfirmDialog` asking to rename the file.
+- `executeRename` checks collision, writes new path with updated H1, deletes old file, dispatches toast, calls `onFileRenamed`.
+- Date-based stems are detected via `/^\d{2}-\d{2}-\d{4}$/` and excluded from rename flow.
+
+---
+
+### BUG-025 — rebuildContext never updated index files / no auto-trigger after filing
+
+**Issue A — Index files never updated:**
+`rebuildContext` only read context index files, never wrote them. Projects/people/ideas added after the initial vault setup were absent from the LLM context.
+
+**Fix:** `rebuildIndexFiles(readFile, writeFile, listTree)` added — scans `projects/`, `people/`, `ideas/` folders, reads frontmatter from each file, and rewrites the three index files (`context/projects-index.md`, `context/people-index.md`, `context/ideas-index.md`) on every rebuild. Called at the top of `rebuildContext` before the LLM pass.
+
+**Issue B — No auto-trigger after filing:**
+The `shouldTriggerRebuild` threshold (4+ activity log entries) was rarely met in normal use, so filing a note almost never triggered a rebuild.
+
+**Fix (`src/core/InboxPage.jsx`):** Replaced the conditional `shouldTriggerRebuild` block with an unconditional background `rebuildContext(...)` call after every successful note filing. Non-blocking (`catch` swallows errors with `console.warn`).
+
+---
+
+### rebuildContext.js — full redesign (Task 2)
+
+**Old design:** Every rebuild appended a full `_context.md` snapshot to `_context_log.md`. No structured output. No curation — context grew monotonically.
+
+**New design:**
+
+| Aspect | Old | New |
+|--------|-----|-----|
+| Sections | Narrative thread, Active projects, Standing decisions, Key people | + **Current focus** (5 sections total) |
+| Activity input | Entries since last rebuild only | All entries in last 30 days, newest-first, capped at 30 |
+| LLM output format | Raw markdown | `===CONTEXT===` / `===REMOVED===` / `===END===` delimiters |
+| Curation logic | None (append only) | 14-day staleness threshold; max 5 items per section; LLM removes stale items |
+| Context log write | Always: full snapshot appended | Only if items were removed; format: `- item | reason` |
+| `pruneActivityLog` | Wrote pruned entries to `_context_log.md` | Silently drops old entries — no log write |
+| Entity name fidelity | None | Post-process sanitizer replaces normalized names with exact vault names (fixes `Ubuntucom` → `Ubuntu.com`) |
+| Mutex | Simple boolean flag | Boolean + timestamp; auto-expires after 2 minutes |
+
+**`src/lib/activityLog.js`:**
+- `pruneActivityLog` no longer writes to `_context_log.md`.
+- Removed unused `CONTEXT_LOG_PATH` constant and `entryToContextLogText` function.
+
+**Call sites updated** (all now pass `listTree` as 4th arg): `CommandPage.jsx`, `SettingsPage.jsx`, `InboxPage.jsx`.
+
+---
+
+### BUG-026 — Wikilink color coding: special-character names (Ubuntu.com)
+
+**Problem:** `[[Ubuntu.com Home Page Revamp]]` showed as amber (unresolved) even though the project exists. The vault file is `projects/Ubuntucom-home-page-revamp.md` (dot stripped by `toSlug`). The known-set in `MarkdownEditor.jsx` stored `"ubuntucom home page revamp"` but the link text normalized to `"ubuntu.com home page revamp"` — mismatch on the dot.
+
+**Fix (`src/components/MarkdownEditor.jsx`):**
+- When populating `_knownWikilinksRef`, each suggestion name now also adds a punctuation-stripped version (e.g. `"ubuntucom home page revamp"`).
+- When checking resolution, also checks `innerTight` (link text with punctuation stripped) against the known set.
+- Navigation already worked via the existing `tightSlug` candidate in `resolveWikilinkTarget`.
+
+---
+
+### BUG-027 — Dashboard context cards not populating after rebuild
+
+**Issue A — Section name mismatch (Narrative thread):**
+`rebuildContext.js` was writing `## Current focus` but the UI read `'Narrative thread'`. Fixed by renaming back to `## Narrative thread` in `REQUIRED_HEADINGS` and the LLM prompt template.
+
+**Issue B — Current focus card "No focus data yet":**
+`rebuildContext.js` had no `## Current focus` section at all after the redesign. Added it as a fifth section in `REQUIRED_HEADINGS` and the LLM output format with the instruction: *"max 3 bullets — the single most important priorities or next actions right now"*.
+
+**Issue C — extractContextSection only returned first bullet:**
+The `extractContextSection` regex used `im` flags together. The `m` flag makes `$` match end-of-line, causing the lazy `[\s\S]*?` to stop after the first line. Fixed by removing the `m` flag and changing `^##` to `(?:^|\n)##` so mid-document headings are still found.
+
+**handleRebuildContext fixes (`CommandPage.jsx`):**
+- Added `listTree` to the `useCallback` dependency array (was stale).
+- Added error toast on rebuild failure (was only `console.error`).
+
+---
+
+### BUG-028 — Dashboard summary cards vs project cards visual inconsistency
+
+`ContextCard` and `SummaryCard` used `padding: 12` and `fontSize: 14`; `ProjectCard` uses `padding: '16px 18px 14px'` and `fontSize: 13`.
+
+**Fix (`src/core/dashboard-top.jsx`):**
+- Both summary card types updated to `padding: '16px 18px 14px'` and `fontSize: 13`.
+
+---
+
+### BUG-029 — Current focus bullets not visible
+
+**Problem:** The `<ul>` in `renderContextContent` was missing `listStyleType: 'disc'`. Browser CSS resets default `list-style-type` to `none`, so bullet markers were invisible. `paddingLeft: 16` was providing indent space for markers that never rendered.
+
+**Fix (`src/core/dashboard-top.jsx`):**
+- Added `listStyleType: 'disc'` to the `<ul>` style.
+- Reduced `paddingLeft` from `16` to `14` to align bullet markers with the card title's left edge.
+
+**`renderContextContent` also introduced this session:**
+- Replaced `<pre>` in `ContextCard` with a proper markdown renderer: `- ` / `* ` lines → `<ul><li>`, prose lines → `<p>`.
+- Applies to both Narrative thread and Current focus cards.
+
+---
+
+### Files changed in this session (2026-06-09)
+
+| File | Change |
+|------|--------|
+| `src/components/Sidebar.jsx` | Inline rename input; date-format label fix (dashes preserved); `onRenameFile` prop wired to Notes/Projects/People/Ideas sections |
+| `src/App.jsx` | `handleSidebarRename` function; imports `toSlug`, `retargetTasksForFile`, `parseFrontmatter`, `buildFileContent` |
+| `src/core/ProcessedNoteViewer.jsx` | H1 edit → rename confirm dialog; `isDateBasedFile` guard; `executeRename` / `cancelRename` |
+| `src/lib/rebuildContext.js` | Full redesign: 5 sections, curation model, delimiter output, entity name sanitizer, index file builder, stuck-mutex timeout |
+| `src/lib/activityLog.js` | `pruneActivityLog` no longer writes to `_context_log.md`; removed unused `CONTEXT_LOG_PATH` and `entryToContextLogText` |
+| `src/core/InboxPage.jsx` | Unconditional background rebuild after filing; removed `shouldTriggerRebuild` |
+| `src/core/CommandPage.jsx` | `extractContextSection` regex fixed (no `m` flag); `listTree` dep added; error toast; diagnostic `console.log` |
+| `src/core/SettingsPage.jsx` | `rebuildContext` call updated to pass `listTree` |
+| `src/components/MarkdownEditor.jsx` | Punctuation-stripped wikilink name added to known-set; `innerTight` checked on resolution |
+| `src/core/dashboard-top.jsx` | `renderContextContent` markdown renderer; `ContextCard` and `SummaryCard` padding/font normalized; `listStyleType: 'disc'` on `<ul>`; `paddingLeft: 14` |
+
