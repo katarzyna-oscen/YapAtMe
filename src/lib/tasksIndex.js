@@ -257,3 +257,60 @@ export async function restoreArchivedTasksForModule(readFile, writeFile, moduleI
   })
   await writeTasksIndex(writeFile, updated)
 }
+
+export async function archiveDoneTasks(readFile, writeFile) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  let count = 0
+  const updated = existing.map((entry) => {
+    if (entry?.status !== 'done') return entry
+    count++
+    return {
+      ...entry,
+      archived_from_status: 'done',
+      status: 'archived',
+      archived_at: today,
+      last_updated: today,
+    }
+  })
+  await writeTasksIndex(writeFile, updated)
+  return count
+}
+
+export async function deleteArchivedTasks(readFile, writeFile) {
+  const existing = await readTasksIndex(readFile)
+  const next = existing.filter((e) => e?.status !== 'archived' && e?.status !== 'done')
+  const count = existing.length - next.length
+  await writeTasksIndex(writeFile, next)
+  return count
+}
+
+// ─── Plan-section utilities (match by file + section + title, not id) ─────────
+
+export async function setPlanTaskStatus(readFile, writeFile, filePath, sectionName, title, done) {
+  const existing = await readTasksIndex(readFile)
+  const normalTitle = String(title || '').trim().toLowerCase()
+  const today = new Date().toISOString().slice(0, 10)
+  let found = false
+  const updated = existing.map((e) => {
+    if (e?.file !== filePath || e?.section !== sectionName) return e
+    if (String(e?.title || '').trim().toLowerCase() !== normalTitle) return e
+    found = true
+    const base = { ...e, status: done ? 'done' : 'open', last_updated: today }
+    if (done) base.resolved_at = today
+    else delete base.resolved_at
+    return base
+  })
+  if (found) await writeTasksIndex(writeFile, updated)
+}
+
+export async function removePlanTask(readFile, writeFile, filePath, sectionName, title) {
+  const existing = await readTasksIndex(readFile)
+  const normalTitle = String(title || '').trim().toLowerCase()
+  const filtered = existing.filter((e) => {
+    if (e?.file !== filePath || e?.section !== sectionName) return true
+    return String(e?.title || '').trim().toLowerCase() !== normalTitle
+  })
+  if (filtered.length !== existing.length) await writeTasksIndex(writeFile, filtered)
+}
+

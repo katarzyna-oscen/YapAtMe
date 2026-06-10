@@ -732,6 +732,74 @@ The `extractContextSection` regex used `im` flags together. The `m` flag makes `
 
 ---
 
+## Session update — 2026-06-10
+
+### Plan step consistency — three interconnected bugs fixed
+
+**Problem (three bugs):**
+
+1. **Done steps disappeared in viewer.** `TaskPanel` (used for the plan section in IdeaViewer and ProjectViewer) only shows tasks with `status !== 'done'` from the tasks index. Resolving a step made it vanish entirely instead of showing as crossed off.
+2. **No edit or delete on plan steps in viewers.** `TaskPanel` has no per-step edit or delete affordances.
+3. **Out-of-sync between viewers and PlansPage.** Viewers wrote to the tasks index only; PlansPage reads/writes the markdown `## Current Plan` section only. The two stores diverged silently on every toggle.
+
+**Architecture — `PlanChecklist` component (`src/components/PlanChecklist.jsx`):**
+
+New component that replaces `TaskPanel` for all plan sections. Key design:
+- Reads from `sectionText` prop (raw content of `## Current Plan`, no heading) — same source as PlansPage.
+- Renders ALL steps: open (checkbox, editable text on click, × delete on hover) and done (checked, strikethrough, × delete on hover).
+- "Add step" inline input at bottom.
+- Stats line ("N of M done · steps feed the Plans screen").
+- Callbacks: `onChange(newSectionText)`, `onToggle(title, nowDone)`, `onDelete(title)`, `onAdd(title)`, `onRename(oldTitle, newTitle, isDone)`.
+
+**`src/lib/tasksIndex.js` — two new exports:**
+- `setPlanTaskStatus(readFile, writeFile, filePath, section, title, done)` — matches by file+section+title (not id), updates status and `resolved_at`.
+- `removePlanTask(readFile, writeFile, filePath, section, title)` — removes entry by file+section+title.
+
+**`src/core/IdeaViewer.jsx`:**
+- Removed `TaskPanel`, `appendToSection`, `resolveTaskEntry` imports; removed `tasks`, `planCount`, `planDone`, `addingStep`, `newPlanStep` state; removed `loadStats`.
+- Plan step count badge now computed inline from `parsePlanSteps(sectionCurrentPlan)`.
+- `save(overrides)` extended: `sectionCurrentPlan` override prevents stale-closure writes.
+- `queueSave(overrides)` now passes overrides through to `save`.
+- `handlePlanToggle` / `handlePlanDelete` / `handlePlanAdd` / `handlePlanRename` handlers added — call `setPlanTaskStatus` / `removePlanTask` / `appendTaskEntry` after applying the change to `sectionCurrentPlan`.
+- Plan section JSX replaced with `<PlanChecklist>`.
+
+**`src/core/ProjectViewer.jsx`:**
+- Added `sectionCurrentPlan` state + `sectionCurrentPlanRef` (ref for stale-closure-safe saves).
+- `loadFile` extracts `## Current Plan` section via regex, stores it separately, strips it from `editorBody` before passing to Milkdown.
+- `save(body)` re-injects the plan section from `sectionCurrentPlanRef.current` before `## Recent Mentions` (or at end of file).
+- Removed `planCount`, `planDone`, `addingStep`, `newPlanStep` state; simplified `loadStats` to remove plan tracking.
+- Existing plan UI (TaskPanel + add step) replaced with `<PlanChecklist>`.
+- Same four plan handlers as IdeaViewer.
+
+**`src/core/PlansPage.jsx`:**
+- Imports `setPlanTaskStatus`.
+- `handleToggleStep`: after `toggleStepInFile` (markdown), also calls `setPlanTaskStatus` — keeps tasks index in sync when toggling from the Plans screen.
+
+---
+
+### Entity picker (`src/components/EntityPicker.jsx`)
+
+New chip-based entity selector component (implemented previous session, first commit this session):
+- Shows existing selections as `[[Name]] ×` chips.
+- Typeahead dropdown filtered by `filterType` ('project' | 'person' | 'idea' | null).
+- `+ Add "query"` option for free-form entry.
+- Wired into IdeaViewer Related Projects/People sections and PersonViewer Related Projects section (replaces old `WikilinkTextField`).
+
+---
+
+### Files changed in this session (2026-06-10)
+
+| File | Change |
+|------|--------|
+| `src/lib/tasksIndex.js` | Added `setPlanTaskStatus`, `removePlanTask` |
+| `src/components/PlanChecklist.jsx` | New component — renders all plan steps (open + done) from markdown section text |
+| `src/components/EntityPicker.jsx` | New component — chip+typeahead entity picker |
+| `src/core/IdeaViewer.jsx` | Replaced TaskPanel plan UI with PlanChecklist; removed loadStats; save/queueSave override support; plan handlers added |
+| `src/core/ProjectViewer.jsx` | Replaced TaskPanel plan UI with PlanChecklist; plan section extracted from body + re-injected on save; plan handlers added |
+| `src/core/PlansPage.jsx` | Syncs tasks index on step toggle via `setPlanTaskStatus` |
+
+---
+
 ## Session update — 2026-06-09 (continued)
 
 ### BUG-033 — Entity names in sidebar showing raw slugs

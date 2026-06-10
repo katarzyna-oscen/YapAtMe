@@ -6,10 +6,11 @@ import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import DictateBtn from '../components/DictateBtn'
 import TrashMenuButton from '../components/TrashMenuButton'
 import TaskPanel from '../components/TaskPanel'
-import { readTasksIndex, resolveTaskEntry, retargetTasksForFile } from '../lib/tasksIndex'
+import { readTasksIndex, resolveTaskEntry, retargetTasksForFile, appendTaskEntry, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
 import { invalidateFileIndex } from '../lib/fileIndex'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
+import PlanChecklist, { parsePlanSteps } from '../components/PlanChecklist'
 
 const STATUS_CYCLE = ['Untriaged', 'Triaged', 'Building', 'Blocked', 'Done']
 
@@ -66,9 +67,12 @@ export default function ProjectViewer({
   const [lastUpdated, setLastUpdated] = useState('')
 
   const [editorBody, setEditorBody] = useState('')
+  const [sectionCurrentPlan, setSectionCurrentPlan] = useState('')
   const [tasks, setTasks] = useState([])
   const [actionsCount, setActionsCount] = useState(0)
   const [delegateCount, setDelegateCount] = useState(0)
+
+  const sectionCurrentPlanRef = useRef('')
 
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState('idle')
@@ -113,7 +117,17 @@ export default function ProjectViewer({
       setOwner(fields?.owner || '')
       setCoreProblem(fields?.core_problem || '')
       setLastUpdated(fields?.last_updated || '')
-      setEditorBody((body || '').trimStart())
+
+      // Extract ## Current Plan section; keep the rest for Milkdown
+      const planMatch = (body || '').match(/##\s+Current Plan\s*\n([\s\S]*?)(?=\n##\s|$)/i)
+      const planContent = planMatch ? planMatch[1].trimEnd() : ''
+      setSectionCurrentPlan(planContent)
+      sectionCurrentPlanRef.current = planContent
+      const bodyWithoutPlan = (body || '')
+        .replace(/##\s+Current Plan\s*\n[\s\S]*?(?=\n##\s|$)/i, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trimStart()
+      setEditorBody(bodyWithoutPlan)
     } catch {
       setName('')
       setStatus('Untriaged')
@@ -158,7 +172,21 @@ export default function ProjectViewer({
       last_updated: today,
     }
 
-    const full = buildFileContent(fields, body)
+    // Re-inject the plan section (managed separately from the Milkdown editor)
+    const planContent = sectionCurrentPlanRef.current
+    let fullBody = (body || '').trimEnd()
+    if (planContent.trim()) {
+      const planBlock = `## Current Plan\n${planContent}`
+      const mentionsRe = /\n##\s+Recent Mentions/i
+      if (mentionsRe.test(fullBody)) {
+        const idx = fullBody.search(mentionsRe)
+        fullBody = fullBody.slice(0, idx).trimEnd() + '\n\n' + planBlock + '\n\n' + fullBody.slice(idx).trimStart()
+      } else {
+        fullBody = fullBody + '\n\n' + planBlock
+      }
+    }
+
+    const full = buildFileContent(fields, fullBody)
 
     try {
       await writeFile(filePath, full)
@@ -303,6 +331,42 @@ export default function ProjectViewer({
     await resolveTaskEntry(readFile, writeFile, id)
     onTasksChanged?.()
     await loadStats(filePath)
+  }
+
+  const handlePlanChange = (newText) => {
+    setSectionCurrentPlan(newText)
+    sectionCurrentPlanRef.current = newText
+    queueSave(editorBody)
+  }
+
+  const handlePlanToggle = async (stepTitle, nowDone) => {
+    await setPlanTaskStatus(readFile, writeFile, filePath, '## Current Plan', stepTitle, nowDone)
+    onTasksChanged?.()
+    window.dispatchEvent(new Event('memostack:tasks-index-changed'))
+  }
+
+  const handlePlanDelete = async (stepTitle) => {
+    await removePlanTask(readFile, writeFile, filePath, '## Current Plan', stepTitle)
+    onTasksChanged?.()
+    window.dispatchEvent(new Event('memostack:tasks-index-changed'))
+  }
+
+  const handlePlanAdd = async (stepTitle) => {
+    await appendTaskEntry(readFile, writeFile, {
+      file: filePath, module: 'projects', section: '## Current Plan', title: stepTitle, tags: ['action'],
+    })
+    onTasksChanged?.()
+    window.dispatchEvent(new Event('memostack:tasks-index-changed'))
+  }
+
+  const handlePlanRename = async (oldTitle, newTitle, isDone) => {
+    await removePlanTask(readFile, writeFile, filePath, '## Current Plan', oldTitle)
+    await appendTaskEntry(readFile, writeFile, {
+      file: filePath, module: 'projects', section: '## Current Plan', title: newTitle,
+      tags: ['action'], status: isDone ? 'done' : 'open',
+    })
+    onTasksChanged?.()
+    window.dispatchEvent(new Event('memostack:tasks-index-changed'))
   }
 
   const handleWikilinkClick = async (name) => {
@@ -512,6 +576,21 @@ export default function ProjectViewer({
             onResolve={handleResolveTask}
             onWikilinkClick={handleWikilinkClick}
           />
+
+          {/* ─── CURRENT PLAN ─── */}
+          <div style={{ marginBottom: 32 }}>
+            <div style={{ fontSize: 11, letterSpacing: '0.16em', fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-very-dim)', marginBottom: 10 }}>
+              Current Plan
+            </div>
+            <PlanChecklist
+              sectionText={sectionCurrentPlan}
+              onChange={handlePlanChange}
+              onToggle={handlePlanToggle}
+              onDelete={handlePlanDelete}
+              onAdd={handlePlanAdd}
+              onRename={handlePlanRename}
+            />
+          </div>
 
           <div key={filePath} className="milkdown-wrapper">
             <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={handleWikilinkClick} wikilinkSuggestions={wikilinkSuggestions ?? []} />
