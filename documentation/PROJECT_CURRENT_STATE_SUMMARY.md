@@ -800,6 +800,41 @@ New chip-based entity selector component (implemented previous session, first co
 
 ---
 
+### Plans view polish (2026-06-10 continued)
+
+#### PlanChecklist checkbox style
+
+Replaced the native `<input type="checkbox">` (with `accentColor: var(--success)`) with a custom `<button>` matching `PlansPage`'s `PlanStepRow` exactly:
+- Open: neutral `var(--border-strong)` border, transparent fill.
+- Hover: border turns `var(--success)` green.
+- Done: green fill + white SVG checkmark + green border.
+- Added `boxHov` state to `StepRow` for the hover transition.
+
+#### PlanChecklist indentation
+
+Added `paddingLeft: 12` to step row containers so the left edge of PlanChecklist checkboxes aligns with TaskPanel rows.
+
+#### PlansPage status chip keys fixed
+
+`STATUS_STYLE` had stale project status keys (`active`, `planning`, `on_hold`, `completed`) that never matched frontmatter values — every project chip fell through to the grey default. Replaced with the correct `ProjectViewer` keys: `Untriaged`, `Triaged`, `Building`, `Blocked`, `Done`.
+
+#### Plans archive
+
+When all steps in a plan block are checked, an **Archive** button appears in the green "All steps done" footer. Behavior:
+- Clicking writes `plan_archived: true` to the entity's frontmatter via `buildFileContent`.
+- Optimistic update: card immediately moves out of the active list.
+- A collapsible **Archived** section appears at the bottom of PlansPage (collapsed by default, chevron + count). Archived cards show "Archived" text in the footer instead of the Archive button.
+- Archived entities are still loaded from disk on next page visit (read from `fields.plan_archived`).
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/components/PlanChecklist.jsx` | Checkbox: native input → styled button matching PlansPage; `boxHov` state; `paddingLeft: 12` on step rows |
+| `src/core/PlansPage.jsx` | Status chip keys corrected; `buildFileContent` import added; `handleArchive`; `planArchived` in entity state; `ArchivedSection` collapsible component; `onArchive` prop wired in active `PlanBlock` renders |
+
+---
+
 ## Session update — 2026-06-09 (continued)
 
 ### BUG-033 — Entity names in sidebar showing raw slugs

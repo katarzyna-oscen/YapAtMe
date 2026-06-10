@@ -41,10 +41,24 @@ function applyAdd(sectionText, text) {
   return trimmed ? trimmed + '\n' + newLine : newLine
 }
 
+// Normalizes pasted text into an array of plain step titles.
+// Handles markdown checkboxes, bullets, numbered lists, and plain lines.
+function parsePastedLines(raw) {
+  return raw.split('\n')
+    .map((line) => line
+      .replace(/^-\s+\[[ x]\]\s*/i, '')  // - [ ] or - [x]
+      .replace(/^[-*•]\s+/, '')             // - or * or • bullet
+      .replace(/^\d+[.)\s]\s*/, '')         // 1. or 1) or 1 
+      .trim()
+    )
+    .filter(Boolean)
+}
+
 // ─── Step row ─────────────────────────────────────────────────────────────────
 
 function StepRow({ step, onToggle, onDelete, onEditDone }) {
   const [hover, setHover] = useState(false)
+  const [boxHov, setBoxHov] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(step.text)
 
@@ -63,17 +77,38 @@ function StepRow({ step, onToggle, onDelete, onEditDone }) {
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        padding: '6px 0',
+        padding: '6px 0 6px 12px',
         borderBottom: '1px solid var(--border-subtle)',
       }}
     >
-      {/* Checkbox */}
-      <input
-        type="checkbox"
-        checked={step.done}
-        onChange={onToggle}
-        style={{ flexShrink: 0, cursor: 'pointer', accentColor: 'var(--success)', width: 14, height: 14 }}
-      />
+      {/* Checkbox — styled to match TaskPanel */}
+      <button
+        onClick={onToggle}
+        onMouseEnter={() => setBoxHov(true)}
+        onMouseLeave={() => setBoxHov(false)}
+        title={step.done ? 'Mark open' : 'Mark done'}
+        style={{
+          flexShrink: 0,
+          width: 18,
+          height: 18,
+          border: '1.5px solid',
+          borderColor: step.done ? 'var(--success)' : (boxHov ? 'var(--success)' : 'var(--border-strong)'),
+          borderRadius: 5,
+          background: step.done ? 'var(--success)' : 'transparent',
+          cursor: 'pointer',
+          padding: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'border-color .12s, background .12s',
+        }}
+      >
+        {step.done && (
+          <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="var(--bg-primary)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m3 8 3.5 3.5L13 5" />
+          </svg>
+        )}
+      </button>
 
       {/* Text (editable inline for open steps) */}
       {editing ? (
@@ -149,14 +184,15 @@ function StepRow({ step, onToggle, onDelete, onEditDone }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 //
 // Props:
-//   sectionText   — string: raw content of ## Current Plan section (no heading)
-//   onChange      — (newSectionText: string) => void
-//   onToggle      — (stepTitle: string, nowDone: boolean) => void  — tasks index sync
-//   onDelete      — (stepTitle: string) => void  — tasks index sync
-//   onAdd         — (stepTitle: string) => void  — tasks index sync
-//   onRename      — (oldTitle: string, newTitle: string, isDone: boolean) => void  — tasks index sync
+//   sectionText    — string: raw content of ## Current Plan section (no heading)
+//   onChange       — (newSectionText: string) => void
+//   onToggle       — (stepTitle: string, nowDone: boolean) => void  — tasks index sync
+//   onDelete       — (stepTitle: string) => void  — tasks index sync
+//   onAdd          — (stepTitle: string) => void  — tasks index sync (single)
+//   onAddMultiple  — (titles: string[]) => void   — tasks index sync (batch paste)
+//   onRename       — (oldTitle: string, newTitle: string, isDone: boolean) => void  — tasks index sync
 
-export default function PlanChecklist({ sectionText, onChange, onToggle, onDelete, onAdd, onRename }) {
+export default function PlanChecklist({ sectionText, onChange, onToggle, onDelete, onAdd, onAddMultiple, onRename }) {
   const [addingStep, setAddingStep] = useState(false)
   const [newStepText, setNewStepText] = useState('')
 
@@ -189,6 +225,19 @@ export default function PlanChecklist({ sectionText, onChange, onToggle, onDelet
     const newSection = applyAdd(sectionText, text)
     onChange(newSection)
     onAdd?.(text)
+    setNewStepText('')
+    setAddingStep(false)
+  }
+
+  const handlePaste = (e) => {
+    const raw = e.clipboardData.getData('text')
+    const lines = parsePastedLines(raw)
+    if (lines.length < 2) return  // single line — fall through to normal paste
+    e.preventDefault()
+    let newSection = sectionText
+    for (const line of lines) newSection = applyAdd(newSection, line)
+    onChange(newSection)
+    onAddMultiple ? onAddMultiple(lines) : lines.forEach((t) => onAdd?.(t))
     setNewStepText('')
     setAddingStep(false)
   }
@@ -230,6 +279,7 @@ export default function PlanChecklist({ sectionText, onChange, onToggle, onDelet
               if (e.key === 'Enter') handleAdd()
               if (e.key === 'Escape') { setAddingStep(false); setNewStepText('') }
             }}
+            onPaste={handlePaste}
             onBlur={() => { if (!newStepText.trim()) { setAddingStep(false) } else handleAdd() }}
             placeholder="Add a plan step…"
             style={{

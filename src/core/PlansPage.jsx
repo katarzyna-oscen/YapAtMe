@@ -1,16 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
-import { parseFrontmatter } from '../lib/frontmatter'
+import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import { setPlanTaskStatus } from '../lib/tasksIndex'
 
 // ─── Status colours (matching IdeaViewer + ProjectViewer chips) ───────────────
 
 const STATUS_STYLE = {
-  // Project statuses
-  active:    { bg: 'oklch(0.74 0.14 165 / 0.10)', border: 'oklch(0.74 0.14 165 / 0.30)', color: 'var(--success)' },
-  planning:  { bg: 'oklch(0.72 0.13 240 / 0.10)', border: 'oklch(0.72 0.13 240 / 0.30)', color: 'var(--info)' },
-  on_hold:   { bg: 'var(--panel-2)',               border: 'var(--border)',                color: 'var(--text-very-dim)' },
-  completed: { bg: 'oklch(0.74 0.14 165 / 0.10)', border: 'oklch(0.74 0.14 165 / 0.30)', color: 'var(--success)' },
-  // Idea statuses
+  // Project statuses (matches ProjectViewer STATUS_STYLE)
+  Untriaged: { bg: 'transparent',                  border: 'var(--border)',                color: 'var(--text-very-dim)' },
+  Triaged:   { bg: 'oklch(0.72 0.13 240 / 0.12)', border: 'oklch(0.72 0.13 240 / 0.35)', color: 'var(--info)' },
+  Building:  { bg: 'oklch(0.74 0.14 165 / 0.12)', border: 'oklch(0.74 0.14 165 / 0.35)', color: 'var(--success)' },
+  Blocked:   { bg: 'oklch(0.70 0.18 22 / 0.12)',  border: 'oklch(0.70 0.18 22 / 0.35)',  color: 'var(--danger)' },
+  Done:      { bg: 'var(--panel-2)',               border: 'var(--border)',                color: 'var(--text-very-dim)' },
+  // Idea statuses (matches IdeaViewer STATUS_STYLE)
   Spark:      { bg: 'oklch(0.85 0.16 95 / 0.10)',  border: 'oklch(0.85 0.16 95 / 0.35)',  color: 'oklch(0.88 0.16 95)' },
   Developing: { bg: 'oklch(0.72 0.13 240 / 0.12)', border: 'oklch(0.72 0.13 240 / 0.35)', color: 'var(--info)' },
   Validate:   { bg: 'oklch(0.74 0.14 165 / 0.12)', border: 'oklch(0.74 0.14 165 / 0.35)', color: 'var(--success)' },
@@ -147,8 +148,9 @@ function PlanStepRow({ step, onToggle }) {
 
 // ─── Plan block ───────────────────────────────────────────────────────────────
 
-function PlanBlock({ name, status, subtitle, plan, onToggleStep, onOpen }) {
+function PlanBlock({ name, status, subtitle, plan, onToggleStep, onOpen, onArchive, archived }) {
   const [nameHov, setNameHov] = useState(false)
+  const [archHov, setArchHov] = useState(false)
   const done = plan.filter((s) => s.done).length
   const allDone = done === plan.length && plan.length > 0
 
@@ -192,15 +194,34 @@ function PlanBlock({ name, status, subtitle, plan, onToggleStep, onOpen }) {
       {/* All-done footer */}
       {allDone && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 8,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 18px', borderTop: '1px solid var(--border-subtle)',
           background: 'oklch(0.74 0.14 165 / 0.06)',
           fontSize: 12, fontWeight: 500, color: 'oklch(0.80 0.13 165)',
         }}>
-          <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="m3 8 3.5 3.5L13 5" />
-          </svg>
-          All steps done
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m3 8 3.5 3.5L13 5" />
+            </svg>
+            {archived ? 'Archived' : 'All steps done'}
+          </div>
+          {!archived && onArchive && (
+            <button
+              onClick={onArchive}
+              onMouseEnter={() => setArchHov(true)}
+              onMouseLeave={() => setArchHov(false)}
+              style={{
+                fontSize: 11.5, fontWeight: 500, fontFamily: 'inherit',
+                padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
+                border: `1px solid ${archHov ? 'oklch(0.60 0.10 165)' : 'oklch(0.50 0.08 165)'}`,
+                background: archHov ? 'oklch(0.74 0.14 165 / 0.20)' : 'oklch(0.74 0.14 165 / 0.10)',
+                color: 'oklch(0.80 0.13 165)',
+                transition: 'background .12s, border-color .12s',
+              }}
+            >
+              Archive
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -262,6 +283,67 @@ async function toggleStepInFile(readFile, writeFile, filePath, stepRaw, nowDone)
   await writeFile(filePath, updated)
 }
 
+// ─── Archived section ─────────────────────────────────────────────────────────
+
+function ArchivedSection({ projects, ideas, onToggleStep, onOpen }) {
+  const [open, setOpen] = useState(false)
+  const count = projects.length + ideas.length
+  return (
+    <section style={{ marginTop: 8 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          marginBottom: open ? 14 : 0, padding: '0 4px',
+          background: 'none', border: 'none', cursor: 'pointer', width: '100%',
+        }}
+      >
+        <svg
+          viewBox="0 0 10 10" width="9" height="9" fill="none" stroke="var(--text-very-dim)"
+          strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+          style={{ flexShrink: 0, transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform .15s' }}
+        >
+          <path d="M3 2l4 3-4 3" />
+        </svg>
+        <span style={{
+          fontSize: 11, letterSpacing: '0.16em', fontWeight: 600,
+          textTransform: 'uppercase', color: 'var(--text-very-dim)',
+        }}>Archived</span>
+        <span style={{ fontSize: 11, color: 'var(--text-very-dim)', opacity: 0.6, fontVariantNumeric: 'tabular-nums' }}>{count}</span>
+      </button>
+
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {projects.map((entity) => (
+            <PlanBlock
+              key={entity.id}
+              name={entity.name}
+              status={entity.status}
+              subtitle={entity.subtitle}
+              plan={entity.plan}
+              archived
+              onToggleStep={(stepId) => onToggleStep(entity.id, stepId)}
+              onOpen={() => onOpen(entity.filePath)}
+            />
+          ))}
+          {ideas.map((entity) => (
+            <PlanBlock
+              key={entity.id}
+              name={entity.name}
+              status={entity.status}
+              subtitle={entity.subtitle}
+              plan={entity.plan}
+              archived
+              onToggleStep={(stepId) => onToggleStep(entity.id, stepId)}
+              onOpen={() => onOpen(entity.filePath)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function PlansPage({ readFile, writeFile, listTree, settings, onNavigate }) {
@@ -304,6 +386,7 @@ export default function PlansPage({ readFile, writeFile, listTree, settings, onN
               subtitle: subtitle || '',
               plan,
               lastUpdated: fields?.last_updated || '',
+              planArchived: fields?.plan_archived === true,
             })
           } catch {}
         }
@@ -333,6 +416,7 @@ export default function PlansPage({ readFile, writeFile, listTree, settings, onN
               subtitle: subtitle || '',
               plan,
               lastUpdated: fields?.last_updated || '',
+              planArchived: fields?.plan_archived === true,
             })
           } catch {}
         }
@@ -389,24 +473,48 @@ export default function PlansPage({ readFile, writeFile, listTree, settings, onN
     }
   }, [entities, readFile, writeFile])
 
+  const handleArchive = useCallback(async (entityId) => {
+    const entity = entities.find((e) => e.id === entityId)
+    if (!entity) return
+    // Optimistic
+    setEntities((prev) => prev.map((e) => e.id === entityId ? { ...e, planArchived: true } : e))
+    try {
+      const raw = await readFile(entity.filePath)
+      const { fields, body } = parseFrontmatter(raw)
+      fields.plan_archived = true
+      await writeFile(entity.filePath, buildFileContent(fields, body))
+    } catch {
+      setEntities((prev) => prev.map((e) => e.id === entityId ? { ...e, planArchived: false } : e))
+    }
+  }, [entities, readFile, writeFile])
+
   // Sort: projects first, then ideas; within each group by last_updated desc
-  const projectEntities = entities
+  const sortDesc = (a, b) => (b.lastUpdated || '').localeCompare(a.lastUpdated || '')
+  const activeEntities   = entities.filter((e) => !e.planArchived)
+  const archivedEntities = entities.filter((e) => e.planArchived)
+
+  const projectEntities = activeEntities
     .filter((e) => e.type === 'project')
-    .sort((a, b) => (b.lastUpdated || '').localeCompare(a.lastUpdated || ''))
-  const ideaEntities = entities
+    .sort(sortDesc)
+  const ideaEntities = activeEntities
     .filter((e) => e.type === 'idea')
-    .sort((a, b) => (b.lastUpdated || '').localeCompare(a.lastUpdated || ''))
+    .sort(sortDesc)
+  const archivedProjects = archivedEntities.filter((e) => e.type === 'project').sort(sortDesc)
+  const archivedIdeas    = archivedEntities.filter((e) => e.type === 'idea').sort(sortDesc)
 
-  const visibleProjects = (filter === 'all' || filter === 'projects') ? projectEntities : []
-  const visibleIdeas    = (filter === 'all' || filter === 'ideas')    ? ideaEntities    : []
+  const visibleProjects        = (filter === 'all' || filter === 'projects') ? projectEntities : []
+  const visibleIdeas           = (filter === 'all' || filter === 'ideas')    ? ideaEntities    : []
+  const visibleArchivedProjects = (filter === 'all' || filter === 'projects') ? archivedProjects : []
+  const visibleArchivedIdeas   = (filter === 'all' || filter === 'ideas')    ? archivedIdeas   : []
+  const hasArchived = visibleArchivedProjects.length + visibleArchivedIdeas.length > 0
 
-  // Stats
+  // Stats (active only)
   const allSteps = [...projectEntities, ...ideaEntities].flatMap((e) => e.plan)
   const stepsLeft = allSteps.filter((s) => !s.done).length
   const stepsDone = allSteps.length - stepsLeft
 
-  const nothingAtAll = projectEntities.length === 0 && ideaEntities.length === 0
-  const filterEmpty  = !nothingAtAll && visibleProjects.length === 0 && visibleIdeas.length === 0
+  const nothingAtAll = activeEntities.length === 0 && archivedEntities.length === 0
+  const filterEmpty  = !nothingAtAll && visibleProjects.length === 0 && visibleIdeas.length === 0 && !hasArchived
 
   if (loading) {
     return (
@@ -467,6 +575,7 @@ export default function PlansPage({ readFile, writeFile, listTree, settings, onN
                   plan={entity.plan}
                   onToggleStep={(stepId) => handleToggleStep(entity.id, stepId)}
                   onOpen={() => onNavigate?.('viewer', entity.filePath)}
+                  onArchive={() => handleArchive(entity.id)}
                 />
               ))}
             </div>
@@ -486,11 +595,19 @@ export default function PlansPage({ readFile, writeFile, listTree, settings, onN
                   plan={entity.plan}
                   onToggleStep={(stepId) => handleToggleStep(entity.id, stepId)}
                   onOpen={() => onNavigate?.('viewer', entity.filePath)}
+                  onArchive={() => handleArchive(entity.id)}
                 />
               ))}
             </div>
           </section>
         )}
+
+        {hasArchived && <ArchivedSection
+          projects={visibleArchivedProjects}
+          ideas={visibleArchivedIdeas}
+          onToggleStep={handleToggleStep}
+          onOpen={(fp) => onNavigate?.('viewer', fp)}
+        />}
       </div>
     </div>
   )
