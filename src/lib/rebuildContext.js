@@ -1,9 +1,11 @@
 import { callLLM } from './llm'
 import { parseFrontmatter } from './frontmatter'
 import { readActivityLog, setActivityLogLastRebuild, pruneActivityLog } from './activityLog'
+import { dbGet, dbPut } from './db'
 
 const CONTEXT_PATH = 'context/_context.md'
 const CONTEXT_LOG_PATH = 'context/_context_log.md'
+const CONTEXT_LOG_MIGRATION_KEY = 'contextLogMigrated_v1'
 const REQUIRED_HEADINGS = [
   'Narrative thread',
   'Current focus',
@@ -134,13 +136,140 @@ function sanitizeEntityNames(text, entityNameMap) {
   return result
 }
 
+// ── Context log helpers ───────────────────────────────────────────────────────
+
+let _contextLogMigrated = false
+
+// Extract compare key from a context text block (Current focus + Active projects)
+function extractLogCompareKey(text) {
+  const focus = extractSection(text, 'Current focus').replace(/\s+/g, ' ').trim()
+  const projects = extractSection(text, 'Active projects').replace(/\s+/g, ' ').trim()
+  return `${focus}|||${projects}`
+}
+
+// Split a _context_log.md file into its archived blocks
+function splitLogBlocks(logText) {
+  return String(logText || '')
+    .split(/\n---\n(?=## Archived)/i)
+    .map((b) => b.trim())
+    .filter(Boolean)
+}
+
+// Append a new context snapshot to _context_log.md, skipping if identical to last block
+async function appendToContextLog(readFile, writeFile, newContextContent) {
+  let existingLog = ''
+  try { existingLog = await readFile(CONTEXT_LOG_PATH) } catch {}
+
+  const newKey = extractLogCompareKey(newContextContent)
+
+  if (newKey && newKey !== '|||') {
+    const blocks = splitLogBlocks(existingLog)
+    if (blocks.length > 0) {
+      const lastKey = extractLogCompareKey(blocks[blocks.length - 1])
+      if (lastKey === newKey) {
+        console.log('[rebuildContext] context log dedup: skipping identical block')
+        return
+      }
+    }
+  }
+
+  const date = new Date().toISOString().slice(0, 10)
+  const block = `## Archived ${date}\n${newContextContent}`
+  const base = existingLog.trimEnd() || '# Context Log'
+  await writeFile(CONTEXT_LOG_PATH, `${base}\n\n---\n${block}\n`)
+}
+
+// One-time migration: dedup + cap at 20 blocks in _context_log.md
+async function trimContextLog(readFile, writeFile) {
+  if (_contextLogMigrated) return
+
+  try {
+    const done = await dbGet('settings', CONTEXT_LOG_MIGRATION_KEY)
+    if (done) { _contextLogMigrated = true; return }
+  } catch {}
+
+  try {
+    const raw = await readFile(CONTEXT_LOG_PATH)
+    const blocks = splitLogBlocks(raw)
+
+    const seen = new Set()
+    const deduped = []
+    for (const block of blocks) {
+      const key = extractLogCompareKey(block)
+      if (seen.has(key)) continue
+      seen.add(key)
+      deduped.push(block)
+    }
+
+    const capped = deduped.slice(0, 20)
+    const removed = blocks.length - capped.length
+    if (removed > 0) {
+      console.log(`[trimContextLog] removed ${removed} duplicate/excess blocks from _context_log.md`)
+    }
+
+    const body = capped.map((b) => `---\n${b}`).join('\n\n')
+    await writeFile(CONTEXT_LOG_PATH, `# Context Log\n\n${body}\n`)
+  } catch (err) {
+    console.warn('[trimContextLog] failed (non-fatal):', err?.message || err)
+  }
+
+  try { await dbPut('settings', CONTEXT_LOG_MIGRATION_KEY, true) } catch {}
+  _contextLogMigrated = true
+}
+
 // ── Index file builders ──────────────────────────────────────────────────────
 
-async function rebuildIndexFiles(readFile, writeFile, listTree) {
-  if (typeof listTree !== 'function') return new Map()
+function extractSectionBody(markdown, heading) {
+  const rx = new RegExp(`##\\s+${heading}\\s*\\n([\\s\\S]*?)(?=\\n##\\s|$)`, 'i')
+  return markdown.match(rx)?.[1] || ''
+}
+
+function parseRecentMention(markdown) {
+  const body = extractSectionBody(markdown, 'Recent Mentions')
+  const lines = body.split('\n').map((l) => l.trim()).filter(Boolean)
+  for (const line of lines) {
+    // [[DD-MM-YYYY]] — summary  or  DD-MM-YYYY — summary
+    const m = line.match(/^-?\s*(?:\[\[)?(\d{2}-\d{2}-\d{4})(?:\]\])?\s*[—–-]+\s*(.+)/)
+    if (m) return { date: m[1], summary: m[2].trim() }
+  }
+  return null
+}
+
+function parseIdeaSummary(markdown) {
+  const body = extractSectionBody(markdown, 'Summary')
+  const lines = body.split('\n').map((l) => l.trim()).filter(Boolean)
+  for (const line of lines) {
+    // Skip italic placeholders like _One sentence..._
+    if (/^_.*_$/.test(line)) continue
+    if (line.startsWith('_')) continue
+    return line
+  }
+  return null
+}
+
+function humanizeName(filename) {
+  return filename
+    .replace(/\.md$/i, '')
+    .replace(/-/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+export async function rebuildIndexFiles(readFile, writeFile, listTree) {
+  if (typeof listTree !== 'function') return { changed: false, entityNameMap: new Map() }
 
   let tree = []
-  try { tree = await listTree() } catch { return new Map() }
+  try { tree = await listTree() } catch { return { changed: false, entityNameMap: new Map() } }
+
+  let changed = false
+
+  // Write only when content has changed; set `changed` flag if any file differs
+  async function writeIfChanged(path, content) {
+    let existing = ''
+    try { existing = await readFile(path) } catch {}
+    if (existing === content) return
+    await writeFile(path, content)
+    changed = true
+  }
 
   const getFolder = (folder) => {
     if (Array.isArray(tree)) {
@@ -153,91 +282,143 @@ async function rebuildIndexFiles(readFile, writeFile, listTree) {
   const today = new Date().toISOString().slice(0, 10)
   const exactEntityNames = []
 
-  // Projects index
+  // Read tasks index once for all counts
+  let taskEntries = []
   try {
-    const projectFiles = getFolder('projects')
-    const lines = []
-    for (const f of projectFiles) {
-      try {
-        const raw = await readFile(f.path || `projects/${f.name}`)
-        const { fields } = parseFrontmatter(raw)
-        const name = String(fields?.name || f.name.replace(/\.md$/i, '')).trim()
-        exactEntityNames.push(name)
-        const status = String(fields?.status || '').trim()
-        const domain = String(fields?.domain || '').trim()
-        const owner = String(fields?.owner || '').trim()
-        const coreProblem = String(fields?.core_problem || '').trim()
-        const lastUpdated = String(fields?.last_updated || '').trim()
-        const parts = [`**${name}**`]
-        if (status) parts.push(`status: ${status}`)
-        if (domain) parts.push(`domain: ${domain}`)
-        if (owner) parts.push(`owner: ${owner}`)
-        if (coreProblem) parts.push(`core_problem: ${coreProblem}`)
-        if (lastUpdated) parts.push(`last_updated: ${lastUpdated}`)
-        lines.push(`- ${parts.join(' | ')}`)
-      } catch {}
-    }
-    const content = `# Projects Index\n*Last updated: ${today}*\n\n${lines.length ? lines.join('\n') : '_No projects found._'}\n`
-    await writeFile('context/projects-index.md', content)
+    const raw = await readFile('context/tasks-index.json')
+    taskEntries = JSON.parse(raw)
   } catch {}
 
-  // People index
+  function countTasks(filePath, section) {
+    return taskEntries.filter(
+      (e) => e?.file === filePath && e?.status === 'open' && e?.section === section
+    ).length
+  }
+
+  // ── People index ────────────────────────────────────────────────────────────
   try {
     const peopleFiles = getFolder('people')
-    const lines = []
+    const entries = []
     for (const f of peopleFiles) {
       try {
-        const raw = await readFile(f.path || `people/${f.name}`)
-        const { fields } = parseFrontmatter(raw)
-        const name = String(fields?.full_name || f.name.replace(/\.md$/i, '')).trim()
+        const fp = f.path || `people/${f.name}`
+        const raw = await readFile(fp)
+        const { fields, body } = parseFrontmatter(raw)
+        const name = String(fields?.full_name || fields?.name || humanizeName(f.name)).trim()
         exactEntityNames.push(name)
-        const relationship = String(fields?.relationship || '').trim()
+
         const role = String(fields?.role || '').trim()
-        const lastUpdated = String(fields?.last_updated || '').trim()
-        const parts = [`**${name}**`]
-        if (relationship) parts.push(`relationship: ${relationship}`)
-        if (role) parts.push(`role: ${role}`)
-        if (lastUpdated) parts.push(`last_updated: ${lastUpdated}`)
-        lines.push(`- ${parts.join(' | ')}`)
+        const relationship = String(fields?.relationship || '').trim()
+        const delegates = countTasks(fp, '## Delegate')
+        const talkAbout = countTasks(fp, '## Talk About')
+        const mention = parseRecentMention(body)
+
+        const lines = [`## ${name}`]
+        if (role || relationship) {
+          const parts = []
+          if (role) parts.push(`Role: ${role}`)
+          if (relationship) parts.push(`Relationship: ${relationship}`)
+          lines.push(parts.join(' · '))
+        }
+        if (delegates > 0 || talkAbout > 0) {
+          const parts = []
+          if (delegates > 0) parts.push(`${delegates} delegate${delegates !== 1 ? 's' : ''}`)
+          if (talkAbout > 0) parts.push(`${talkAbout} to talk about`)
+          lines.push(`Tasks: ${parts.join(' · ')}`)
+        }
+        if (mention) lines.push(`Last: ${mention.date} — ${mention.summary}`)
+        lines.push(`→ ${fp}`)
+
+        entries.push(lines.join('\n'))
       } catch {}
     }
-    const content = `# People Index\n*Last updated: ${today}*\n\n${lines.length ? lines.join('\n') : '_No people found._'}\n`
-    await writeFile('context/people-index.md', content)
+    const body = entries.length
+      ? entries.join('\n\n---\n\n') + '\n\n---'
+      : '_No people found._'
+    await writeIfChanged('context/people-index.md', `# People Index\n*Last updated: ${today}*\n\n---\n\n${body}\n`)
   } catch {}
 
-  // Ideas index
+  // ── Projects index ──────────────────────────────────────────────────────────
   try {
-    const ideasFiles = getFolder('ideas')
-    const lines = []
+    const projectFiles = getFolder('projects')
+    const entries = []
+    for (const f of projectFiles) {
+      try {
+        const fp = f.path || `projects/${f.name}`
+        const raw = await readFile(fp)
+        const { fields, body } = parseFrontmatter(raw)
+        const name = String(fields?.name || humanizeName(f.name)).trim()
+        exactEntityNames.push(name)
+
+        const status = String(fields?.status || '').trim()
+        const owner = String(fields?.owner || '').trim()
+        const actions = countTasks(fp, '## Open Actions')
+        const decisions = countTasks(fp, '## Decisions')
+        const mention = parseRecentMention(body)
+
+        const lines = [`## ${name}`]
+        const headerParts = []
+        if (status) headerParts.push(`Status: ${status}`)
+        if (owner) headerParts.push(`Owner: ${owner}`)
+        if (headerParts.length) lines.push(headerParts.join(' · '))
+        if (actions > 0 || decisions > 0) {
+          const parts = []
+          if (actions > 0) parts.push(`${actions} action${actions !== 1 ? 's' : ''}`)
+          if (decisions > 0) parts.push(`${decisions} decision${decisions !== 1 ? 's' : ''} pending`)
+          lines.push(`Open: ${parts.join(' · ')}`)
+        }
+        if (mention) lines.push(`Last: ${mention.date} — ${mention.summary}`)
+        lines.push(`→ ${fp}`)
+
+        entries.push(lines.join('\n'))
+      } catch {}
+    }
+    const body = entries.length
+      ? entries.join('\n\n---\n\n') + '\n\n---'
+      : '_No projects found._'
+    await writeIfChanged('context/projects-index.md', `# Projects Index\n*Last updated: ${today}*\n\n---\n\n${body}\n`)
+  } catch {}
+
+  // ── Ideas index ─────────────────────────────────────────────────────────────
+  try {
+    const ideasFiles = getFolder('ideas').filter((f) => f.name !== 'backlog.md')
+    const entries = []
     for (const f of ideasFiles) {
       try {
-        const raw = await readFile(f.path || `ideas/${f.name}`)
-        const { fields } = parseFrontmatter(raw)
-        const stem = f.name.replace(/\.md$/i, '')
-        const name = String(fields?.name || stem).trim()
+        const fp = f.path || `ideas/${f.name}`
+        const raw = await readFile(fp)
+        const { fields, body } = parseFrontmatter(raw)
+        const name = String(fields?.name || humanizeName(f.name)).trim()
         exactEntityNames.push(name)
+
         const status = String(fields?.status || '').trim()
-        const domain = String(fields?.domain || '').trim()
-        const tags = Array.isArray(fields?.tags) ? fields.tags.join(', ') : String(fields?.tags || '').trim()
-        const lastUpdated = String(fields?.last_updated || '').trim()
-        const parts = [`**${name}**`]
-        if (status) parts.push(`status: ${status}`)
-        if (domain) parts.push(`domain: ${domain}`)
-        if (tags) parts.push(`tags: ${tags}`)
-        if (lastUpdated) parts.push(`last_updated: ${lastUpdated}`)
-        lines.push(`- ${parts.join(' | ')}`)
+        const summary = parseIdeaSummary(body)
+
+        const lines = [`## ${name}`]
+        if (status) lines.push(`Status: ${status}`)
+        if (summary) lines.push(`Summary: ${summary}`)
+        lines.push(`→ ${fp}`)
+
+        entries.push(lines.join('\n'))
       } catch {}
     }
-    const content = `# Ideas Index\n*Last updated: ${today}*\n\n${lines.length ? lines.join('\n') : '_No ideas found._'}\n`
-    await writeFile('context/ideas-index.md', content)
+    const body = entries.length
+      ? entries.join('\n\n---\n\n') + '\n\n---'
+      : '_No ideas found._'
+    await writeIfChanged('context/ideas-index.md', `# Ideas Index\n*Last updated: ${today}*\n\n---\n\n${body}\n`)
   } catch {}
 
-  return buildEntityNameMap(exactEntityNames)
+  return { changed, entityNameMap: buildEntityNameMap(exactEntityNames) }
 }
 
 // ── Main export ──────────────────────────────────────────────────────────────
 
-export async function rebuildContext(readFile, writeFile, settings, listTree) {
+export async function rebuildContext(readFile, writeFile, settings, entityNameMap = new Map()) {
+  // Run one-time context log migration (fire-and-forget; failure is non-fatal)
+  trimContextLog(readFile, writeFile).catch((err) =>
+    console.warn('[trimContextLog] failed (non-fatal):', err?.message || err)
+  )
+
   const now = Date.now()
   if (rebuildInProgress && (now - rebuildStartedAt) < REBUILD_TIMEOUT_MS) {
     console.warn('rebuildContext skipped: rebuild already in progress')
@@ -253,14 +434,7 @@ export async function rebuildContext(readFile, writeFile, settings, listTree) {
     let currentContext = ''
     try { currentContext = await readFile(CONTEXT_PATH) } catch {}
 
-    // Rebuild index files from entity folders before reading them into the prompt
-    let entityNameMap = new Map()
-    try {
-      entityNameMap = await rebuildIndexFiles(readFile, writeFile, listTree) ?? new Map()
-    } catch (err) {
-      console.warn('rebuildIndexFiles failed (non-fatal):', err?.message || err)
-    }
-
+    // Index files are already built by caller — read them directly
     let projectsIndex = '', peopleIndex = '', ideasIndex = ''
     try { projectsIndex = await readFile('context/projects-index.md') } catch {}
     try { peopleIndex = await readFile('context/people-index.md') } catch {}
@@ -349,13 +523,11 @@ Output format — use EXACTLY these delimiters, no exceptions:
 
     await writeFile(CONTEXT_PATH, repairedContext)
 
-    // Append ONLY removed items — skip entirely if nothing was removed
-    if (removedItems.length > 0) {
-      const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
-      const logBlock = `\n## Rebuild ${timestamp} — ${removedItems.length} item${removedItems.length === 1 ? '' : 's'} removed\n${removedItems.map((item) => `- ${item}`).join('\n')}\n`
-      let existingLog = ''
-      try { existingLog = await readFile(CONTEXT_LOG_PATH) } catch {}
-      await writeFile(CONTEXT_LOG_PATH, `${existingLog || '# Context Log'}${logBlock}`)
+    // Archive outgoing context to log (dedup guard skips if identical to last block)
+    try {
+      await appendToContextLog(readFile, writeFile, repairedContext)
+    } catch (err) {
+      console.warn('Failed to append to context log:', err?.message || err)
     }
 
     // ── Step 5: Bookkeeping ─────────────────────────────────────────────────

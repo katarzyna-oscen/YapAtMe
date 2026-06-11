@@ -3,7 +3,7 @@ import { useMarkdownEditor } from '../hooks/useMarkdownEditor.jsx'
 import { useVoiceDictation } from '../hooks/useVoiceDictation'
 import { runCleanupPrepass, useNoteProcessor } from '../hooks/useNoteProcessor'
 import { applyChange } from '../lib/approvalHandler'
-import { rebuildContext } from '../lib/rebuildContext'
+import { rebuildIndexFiles, rebuildContext } from '../lib/rebuildContext'
 import { moveFile } from '../lib/vaultWriter'
 import { buildAllowedFiles } from '../lib/vaultScanner'
 import { getFileIndex, invalidateFileIndex } from '../lib/fileIndex'
@@ -989,9 +989,11 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
         setRoutingResult(null)
 
         // Always rebuild context in the background after a successful filing
-        rebuildContext(readFile, writeFile, settings, listTree).catch((err) =>
-          console.warn('Background context rebuild failed:', err?.message || err)
-        )
+        rebuildIndexFiles(readFile, writeFile, listTree)
+          .then(({ changed, entityNameMap }) => {
+            if (changed) return rebuildContext(readFile, writeFile, settings, entityNameMap)
+          })
+          .catch((err) => console.warn('Background context rebuild failed:', err?.message || err))
       } catch (err) {
         console.error('Failed to move note:', err.message)
       }

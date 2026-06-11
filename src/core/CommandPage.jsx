@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { parseFrontmatter } from '../lib/frontmatter'
 import { readTasksIndex } from '../lib/tasksIndex'
 import { callLLM } from '../lib/llm'
-import { rebuildContext } from '../lib/rebuildContext'
+import { rebuildIndexFiles, rebuildContext } from '../lib/rebuildContext'
+import { calculateCloseness, parseMentionDates } from '../lib/closenessScore'
 import DashboardTop from './dashboard-top'
 import DashboardSections from './dashboard-sections'
 
@@ -39,6 +40,21 @@ async function readFrontmatters(readFile, files, folder) {
         return { path, fields }
       } catch {
         return { path, fields: {} }
+      }
+    })
+  )
+}
+
+async function readPeopleFrontmatters(readFile, files) {
+  return Promise.all(
+    files.map(async (file) => {
+      const path = file.path || `people/${file.name}`
+      try {
+        const raw = await readFile(path)
+        const { fields } = parseFrontmatter(raw)
+        return { path, fields, raw }
+      } catch {
+        return { path, fields: {}, raw: '' }
       }
     })
   )
@@ -131,12 +147,10 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
   const [needsCall, setNeedsCall]           = useState([])
   const [weekSummary, setWeekSummary]       = useState(null)
   const [dailyUpdates, setDailyUpdates]     = useState(null)
-  const [summaryLoading, setSummaryLoading] = useState(false)
-  const [updatesLoading, setUpdatesLoading] = useState(false)
+  const [summariesLoading, setSummariesLoading] = useState(false)
   const [contextNarrative, setContextNarrative] = useState(null)
   const [contextFocus, setContextFocus] = useState(null)
   const [contextLastRebuild, setContextLastRebuild] = useState(null)
-  const [contextLoading, setContextLoading] = useState(false)
 
   const loadContextSnapshot = useCallback(async () => {
     let contextMarkdown = ''
@@ -167,7 +181,7 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
 
       const [rawProjects, rawPeople, rawIdeas] = await Promise.all([
         readFrontmatters(readFile, projectFiles, 'projects'),
-        readFrontmatters(readFile, peopleFiles,  'people'),
+        readPeopleFrontmatters(readFile, peopleFiles),
         readFrontmatters(readFile, ideaFiles,    'ideas'),
       ])
 
@@ -184,15 +198,23 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
       })
       })
 
-      const peopleList = rawPeople.map(({ path, fields }) => {
+      const peopleList = rawPeople.map(({ path, fields, raw }) => {
         const safeFields = fields || {}
+        const mentionDates = parseMentionDates(raw)
+        const closeness = calculateCloseness(path, allTasks, mentionDates)
+        const lastMentionDate = mentionDates.length
+          ? mentionDates.reduce((a, b) => (a > b ? a : b))
+          : null
         return ({
-        path,
-        full_name:    safeFields.full_name || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
-        role:         safeFields.role || '',
-        last_updated: safeFields.last_updated || '',
-        cadence:      computeCadence(path, allTasks, safeFields.last_updated),
-      })
+          path,
+          full_name:       safeFields.full_name || path.split('/').pop().replace('.md', '').replace(/-/g, ' '),
+          role:            safeFields.role || '',
+          relationship:    safeFields.relationship || '',
+          last_updated:    safeFields.last_updated || '',
+          closeness,
+          lastMentionDate,
+          taskCount:       openTasks.filter(t => t.file === path).length,
+        })
       })
 
       const ideaList = rawIdeas.map(({ path, fields }) => {
@@ -248,72 +270,32 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
     }
   }, [settings, saveSettings])
 
-  const handleGenerateSummary = async () => {
+  const handleGenerateSummaries = useCallback(async () => {
     if (!settings?.apiKey) return
-    setSummaryLoading(true)
+    setSummariesLoading(true)
     try {
-      let ctx = ''
-      try { ctx = await readFile('context/_context.md') } catch {}
-      const projectSummary = projects
-        .filter(p => p.status !== 'Done')
-        .map(p => `- ${p.name} [${p.status}] — ${p.core_problem || 'no summary'} (updated ${p.last_updated || 'unknown'})`)
-        .join('\n')
-      const prompt = `You are summarising a personal knowledge vault for a weekly digest.\n\nCurrent working memory:\n${ctx}\n\nActive projects:\n${projectSummary}\n\nOpen tasks: ${tasks.length} total\n\nWrite a 3–4 sentence plain prose summary of the week: what's moving, what's stale, what needs attention. Be specific — use project and person names. No bullet points. No preamble.`
-      const raw = await callLLM(
-        [{ role: 'user', content: prompt }],
-        'You generate concise weekly digests from knowledge vault context.',
-        settings
-      )
-      const result = { text: raw.trim(), generated_at: new Date().toISOString() }
-      await writeFile(WEEK_SUMMARY_PATH, JSON.stringify(result, null, 2))
-      setWeekSummary(result)
-    } catch (err) {
-      console.error('Week summary generation failed:', err)
-    } finally {
-      setSummaryLoading(false)
-    }
-  }
-
-  const handleRebuildContext = useCallback(async () => {
-    if (!settings?.apiKey) return
-    setContextLoading(true)
-    try {
-      await rebuildContext(readFile, writeFile, settings, listTree)
-      await loadContextSnapshot()
-    } catch (err) {
-      console.error('Context rebuild failed:', err)
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('memostack:toast', {
-          detail: { message: `Context rebuild failed: ${err?.message || 'Unknown error'}` },
-        }))
-      }
-    } finally {
-      setContextLoading(false)
-    }
-  }, [readFile, writeFile, settings, listTree, loadContextSnapshot])
-
-  const handleGenerateUpdates = async () => {
-    if (!settings?.apiKey) return
-    setUpdatesLoading(true)
-    try {
-      const allTasks = await readTasksIndex(readFile)
-      const y = new Date(Date.now() - 86_400_000)
-      const yesterday = y.toISOString().slice(0, 10)
-
-      const doneYesterday = allTasks
-        .filter((t) => t.status === 'done' && t.resolved_at === yesterday)
-        .slice(0, 20)
-
-      const doneLines = doneYesterday
-        .map((t) => `- ${t.title} (${t.file?.split('/').pop()?.replace('.md', '') || 'unknown'})`)
-        .join('\n')
-
-      // Show source tasks as a reference comment
-      const sourceComment = doneYesterday.length > 0 
-        ? `[Source: ${doneYesterday.length} completed task(s) from ${yesterday}]`
-        : '[Source: No completed tasks]'
-
-      const prompt = `Generate a concise bullet-point summary of these completed tasks. Convert all task titles to PAST TENSE. DO NOT REPHRASE, COMBINE, OR ADD TASKS. Use the exact task titles provided, but convert to past tense.
+      // Run context rebuild + updates generation in parallel
+      await Promise.all([
+        // 1. Narrative thread + Current focus
+        rebuildIndexFiles(readFile, writeFile, listTree)
+          .then(({ entityNameMap }) => rebuildContext(readFile, writeFile, settings, entityNameMap))
+          .then(() => loadContextSnapshot())
+          .catch(err => console.error('Context rebuild failed:', err)),
+        // 2. Updates from yesterday's completed tasks
+        (async () => {
+          const allTasks = await readTasksIndex(readFile)
+          const y = new Date(Date.now() - 86_400_000)
+          const yesterday = y.toISOString().slice(0, 10)
+          const doneYesterday = allTasks
+            .filter(t => t.status === 'done' && t.resolved_at === yesterday)
+            .slice(0, 20)
+          const doneLines = doneYesterday
+            .map(t => `- ${t.title} (${t.file?.split('/').pop()?.replace('.md', '') || 'unknown'})`)
+            .join('\n')
+          const sourceComment = doneYesterday.length > 0
+            ? `[Source: ${doneYesterday.length} completed task(s) from ${yesterday}]`
+            : '[Source: No completed tasks]'
+          const prompt = `Generate a concise bullet-point summary of these completed tasks. Convert all task titles to PAST TENSE. DO NOT REPHRASE, COMBINE, OR ADD TASKS. Use the exact task titles provided, but convert to past tense.
 
 Completed yesterday (${yesterday}):
 ${doneLines || '(none)'}
@@ -326,27 +308,32 @@ Instructions:
 - Do NOT include tasks not in the list above
 - Output 1-6 bullets exactly
 - If no tasks, output: "No completed tasks yesterday."`
-
-      const raw = await callLLM(
-        [{ role: 'user', content: prompt }],
-        'You generate updates by directly using completed task titles with no rephrasing.',
-        settings
-      )
-
-      const result = { 
-        text: raw.trim(),
-        sourceComment: sourceComment,
-        generated_at: new Date().toISOString(),
-        sourceCount: doneYesterday.length 
-      }
-      await writeFile(DAILY_UPDATES_PATH, JSON.stringify(result, null, 2))
-      setDailyUpdates(result)
+          const raw = await callLLM(
+            [{ role: 'user', content: prompt }],
+            'You generate updates by directly using completed task titles with no rephrasing.',
+            settings
+          )
+          const result = {
+            text: raw.trim(),
+            sourceComment,
+            generated_at: new Date().toISOString(),
+            sourceCount: doneYesterday.length,
+          }
+          await writeFile(DAILY_UPDATES_PATH, JSON.stringify(result, null, 2))
+          setDailyUpdates(result)
+        })().catch(err => console.error('Updates generation failed:', err)),
+      ])
     } catch (err) {
-      console.error('Daily updates generation failed:', err)
+      console.error('Generate summaries failed:', err)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('memostack:toast', {
+          detail: { message: `Generation failed: ${err?.message || 'Unknown error'}` },
+        }))
+      }
     } finally {
-      setUpdatesLoading(false)
+      setSummariesLoading(false)
     }
-  }
+  }, [readFile, writeFile, settings, listTree, loadContextSnapshot])
 
   const handleResolveTask = async (taskId) => {
     const { resolveTaskEntry } = await import('../lib/tasksIndex')
@@ -377,15 +364,10 @@ Instructions:
         narrativeThread={contextNarrative}
         currentFocus={contextFocus}
         contextLastRebuild={contextLastRebuild}
-        contextLoading={contextLoading}
-        weekSummary={weekSummary}
+        summariesLoading={summariesLoading}
         dailyUpdates={dailyUpdates}
-        summaryLoading={summaryLoading}
-        updatesLoading={updatesLoading}
         hasApiKey={!!settings?.apiKey}
-        onGenerateSummary={handleGenerateSummary}
-        onGenerateUpdates={handleGenerateUpdates}
-        onRebuildContext={handleRebuildContext}
+        onGenerateSummaries={handleGenerateSummaries}
         onResolveTask={handleResolveTask}
         onNavigate={setPage}
         sectionConfig={settings?.dashboardSections || {}}

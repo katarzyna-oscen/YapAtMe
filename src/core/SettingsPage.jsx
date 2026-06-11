@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { rebuildContext } from '../lib/rebuildContext'
+import { rebuildIndexFiles, rebuildContext } from '../lib/rebuildContext'
 import { migrateEntityTasks } from '../lib/migrateEntityTasks'
 import { cleanEntityFiles } from '../lib/cleanEntityFiles'
 import { callLLM, PROVIDERS } from '../lib/llm'
@@ -447,7 +447,8 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
     setRebuilding(true)
     setRebuildStatus(null)
     try {
-      await rebuildContext(readFile, writeFile, settings, listTree)
+      const { entityNameMap } = await rebuildIndexFiles(readFile, writeFile, listTree)
+      await rebuildContext(readFile, writeFile, settings, entityNameMap)
       setRebuildStatus('ok')
     } catch {
       setRebuildStatus('error')
