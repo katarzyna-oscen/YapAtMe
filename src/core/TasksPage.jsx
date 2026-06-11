@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { createPortal } from 'react-dom'
-import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry, notifyTasksIndexChanged } from '../lib/tasksIndex'
+import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry, notifyTasksIndexChanged, archiveDoneTasks } from '../lib/tasksIndex'
 import { addTaskComment } from '../lib/taskMarker'
 
 const TASK_CATEGORIES = [
@@ -55,6 +54,8 @@ function normalizeTaskDisplayText(raw) {
 
 function indexEntryToTask(entry) {
   if (entry.status === 'archived') return null
+  // Plan steps live in the Plans view, not Tasks
+  if (entry.section === '## Current Plan') return null
 
   let inferredCategory = entry.status === 'done'
     ? 'done'
@@ -374,16 +375,10 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
     }
   }, [draft, draftEntityPath, draftCategory, readFile, writeFile])
 
-  const removeAllDone = useCallback(async (ids) => {
-    const ok = window.confirm("Removed tasks are permanently deleted and won't appear in your daily Updates. Mark as done instead to keep a record. Continue?")
-    if (!ok) return
-
-    setTasks((prev) => prev.filter((task) => !ids.includes(task.id)))
-    for (const id of ids) {
-      try {
-        await deleteTaskEntry(readFile, writeFile, id)
-      } catch {}
-    }
+  const removeAllDone = useCallback(async () => {
+    const count = await archiveDoneTasks(readFile, writeFile)
+    console.log(`[TasksPage] archiveDoneTasks: archived ${count} tasks`)
+    setTasks((prev) => prev.filter((task) => !task.done))
   }, [readFile, writeFile])
 
   const moveTask = useCallback((fromId, toCategory, toBeforeId) => {
@@ -555,7 +550,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
               category={cat}
               count={items.length}
               right={cat.isDone && items.length > 0
-                ? <RemoveAllDoneButton onClick={() => removeAllDone(items.map((task) => task.id))} />
+                ? <RemoveAllDoneButton onClick={removeAllDone} />
                 : null}
               onDragEnter={(e) => { e.preventDefault(); setOverEmptyCat(cat.id); setOverId(null) }}
               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
@@ -1017,7 +1012,7 @@ function AgeChip({ date }) {
   return (
     <span
       title={`${days}d old`}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 8px', borderRadius: 999, background: `oklch(0.82 0.13 ${hue} / 0.12)`, color: `oklch(0.84 0.13 ${hue})`, border: `1px solid oklch(0.82 0.13 ${hue} / 0.28)`, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0 }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 8px', borderRadius: 999, background: `oklch(0.82 0.13 ${hue} / 0.12)`, color: `oklch(0.84 0.13 ${hue})`, border: `1px solid oklch(0.82 0.13 ${hue} / 0.28)`, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0, textTransform: 'lowercase' }}
     >
       <span style={{ width: 5, height: 5, borderRadius: '50%', background: `oklch(0.78 0.16 ${hue})` }} />
       {label}

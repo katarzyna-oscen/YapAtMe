@@ -252,32 +252,19 @@ export default function App() {
   }, [readFile])
 
   const refreshCounts = useCallback(async () => {
-    // Open tasks count (non-done, non-archived)
+    // Open tasks count (non-done, non-archived, non-plan-step)
     try {
       const entries = await readTasksIndex(readFile)
-      const open = (entries || []).filter((e) => e?.status !== 'done' && e?.status !== 'archived').length
+      const open = (entries || []).filter((e) =>
+        e?.status !== 'done' &&
+        e?.status !== 'archived' &&
+        e?.section !== '## Current Plan'
+      ).length
       setOpenTasksCount(open)
     } catch {
       setOpenTasksCount(null)
     }
-    // Active plans count (entities with type:plan and plan_archived != true)
-    try {
-      const plansTree = await listTree()
-      const projectsDir = (plansTree || []).find((e) => e?.name === 'projects')
-      const projectFiles = (projectsDir?.children || []).filter((f) => f?.name?.endsWith('.md'))
-      let planCount = 0
-      await Promise.all(projectFiles.map(async (f) => {
-        try {
-          const raw = await readFile(`projects/${f.name}`)
-          const { fields } = parseFrontmatter(raw)
-          if (String(fields?.type || '').trim().toLowerCase() === 'plan' && !fields?.plan_archived) planCount++
-        } catch {}
-      }))
-      setActivePlansCount(planCount)
-    } catch {
-      setActivePlansCount(null)
-    }
-  }, [readFile, listTree])
+  }, [readFile])
 
   useEffect(() => {
     if (!vaultReady) return
@@ -298,6 +285,23 @@ export default function App() {
     refreshBacklogCount()
     refreshCounts()
   }, [vaultReady, listTree, vaultInitialised, refreshBacklogCount, refreshCounts])
+
+  // Compute active plans count from tree state whenever tree changes
+  useEffect(() => {
+    const projectFiles = (tree?.projects || []).filter((f) => f?.name?.endsWith('.md'))
+    if (projectFiles.length === 0) { setActivePlansCount(0); return }
+    let cancelled = false
+    Promise.all(projectFiles.map(async (f) => {
+      try {
+        const raw = await readFile(`projects/${f.name}`)
+        const { fields } = parseFrontmatter(raw)
+        return String(fields?.type || '').trim().toLowerCase() === 'plan' && !fields?.plan_archived
+      } catch { return false }
+    })).then((results) => {
+      if (!cancelled) setActivePlansCount(results.filter(Boolean).length)
+    }).catch(() => { if (!cancelled) setActivePlansCount(null) })
+    return () => { cancelled = true }
+  }, [tree, readFile])
 
   const navigate = (page, file = null) => {
     if (file) {
