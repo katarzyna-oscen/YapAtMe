@@ -286,16 +286,25 @@ export default function App() {
     refreshCounts()
   }, [vaultReady, listTree, vaultInitialised, refreshBacklogCount, refreshCounts])
 
-  // Compute active plans count from tree state whenever tree changes
+  // Compute active plans count: projects + ideas with a non-empty ## Current Plan and not archived
   useEffect(() => {
     const projectFiles = (tree?.projects || []).filter((f) => f?.name?.endsWith('.md'))
-    if (projectFiles.length === 0) { setActivePlansCount(0); return }
+    const ideaFiles = (tree?.ideas || []).filter((f) => f?.name?.endsWith('.md') && f.name !== 'backlog.md')
+    const allFiles = [
+      ...projectFiles.map((f) => `projects/${f.name}`),
+      ...ideaFiles.map((f) => `ideas/${f.name}`),
+    ]
+    if (allFiles.length === 0) { setActivePlansCount(0); return }
     let cancelled = false
-    Promise.all(projectFiles.map(async (f) => {
+    Promise.all(allFiles.map(async (fp) => {
       try {
-        const raw = await readFile(`projects/${f.name}`)
-        const { fields } = parseFrontmatter(raw)
-        return String(fields?.type || '').trim().toLowerCase() === 'plan' && !fields?.plan_archived
+        const raw = await readFile(fp)
+        const { fields, body } = parseFrontmatter(raw)
+        if (fields?.plan_archived) return false
+        // Has at least one checkbox line in ## Current Plan
+        const planMatch = body.match(/##\s+Current Plan\s*\n([\s\S]*?)(?=\n##\s|$)/i)
+        if (!planMatch) return false
+        return /^-\s+\[[ x]\]/m.test(planMatch[1])
       } catch { return false }
     })).then((results) => {
       if (!cancelled) setActivePlansCount(results.filter(Boolean).length)
