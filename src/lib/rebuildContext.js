@@ -2,6 +2,7 @@ import { callLLM } from './llm'
 import { parseFrontmatter } from './frontmatter'
 import { readActivityLog, setActivityLogLastRebuild, pruneActivityLog } from './activityLog'
 import { dbGet, dbPut } from './db'
+import { extractTagsFromMarkdown, mergeTagsIntoIndex } from './tags'
 
 const CONTEXT_PATH = 'context/_context.md'
 const CONTEXT_LOG_PATH = 'context/_context_log.md'
@@ -425,6 +426,33 @@ export async function rebuildIndexFiles(readFile, writeFile, listTree) {
       : '_No ideas found._'
     await writeIfChanged('context/ideas-index.md', `# Ideas Index\n*Last updated: ${today}*\n\n---\n\n${body}\n`)
   } catch {}
+
+  // ── Tags harvest ────────────────────────────────────────────────────────────
+  // Scan all user-facing markdown files for hashtags and merge into tags.md
+  try {
+    const SCAN_FOLDERS = ['people', 'projects', 'ideas', 'notes', 'inbox']
+    const harvestedTags = new Set()
+
+    for (const folder of SCAN_FOLDERS) {
+      const files = getFolder(folder)
+      for (const f of files) {
+        try {
+          const fp = f.path || `${folder}/${f.name}`
+          const raw = await readFile(fp)
+          for (const tag of extractTagsFromMarkdown(raw)) {
+            harvestedTags.add(tag)
+          }
+        } catch {}
+      }
+    }
+
+    if (harvestedTags.size > 0) {
+      await mergeTagsIntoIndex(readFile, writeFile, [...harvestedTags])
+      console.log(`[rebuildIndexFiles] merged ${harvestedTags.size} tags into tags.md`)
+    }
+  } catch (err) {
+    console.warn('[rebuildIndexFiles] tag harvest failed (non-fatal):', err?.message || err)
+  }
 
   return { changed, entityNameMap: buildEntityNameMap(exactEntityNames) }
 }
