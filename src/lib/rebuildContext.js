@@ -236,13 +236,17 @@ function parseRecentMention(markdown) {
 }
 
 function parseIdeaSummary(markdown) {
-  const body = extractSectionBody(markdown, 'Summary')
-  const lines = body.split('\n').map((l) => l.trim()).filter(Boolean)
+  const lines = String(markdown || '').split('\n')
+  let inSummary = false
   for (const line of lines) {
-    // Skip italic placeholders like _One sentence..._
-    if (/^_.*_$/.test(line)) continue
-    if (line.startsWith('_')) continue
-    return line
+    const trimmed = line.trim()
+    if (/^##\s+Summary\s*$/i.test(trimmed)) { inSummary = true; continue }
+    if (!inSummary) continue
+    if (/^##\s/.test(trimmed)) return null  // hit next section heading — stop
+    if (!trimmed) continue  // empty line
+    if (/^_.*_$/.test(trimmed)) continue  // italic placeholder
+    if (trimmed.startsWith('_')) continue
+    return trimmed
   }
   return null
 }
@@ -252,6 +256,20 @@ function humanizeName(filename) {
     .replace(/\.md$/i, '')
     .replace(/-/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+// Resolve display name: frontmatter title → other frontmatter keys → H1 → truncated slug
+function resolveDisplayName(fields, body, filename, ...altKeys) {
+  const title = String(fields?.title || '').trim()
+  if (title) return title
+  for (const key of altKeys) {
+    const val = String(fields?.[key] || '').trim()
+    if (val) return val
+  }
+  const h1 = String(body || '').match(/^#\s+(.+)$/m)?.[1]?.trim()
+  if (h1) return h1
+  const humanized = humanizeName(filename)
+  return humanized.length > 60 ? humanized.slice(0, 59) + '\u2026' : humanized
 }
 
 export async function rebuildIndexFiles(readFile, writeFile, listTree) {
@@ -304,7 +322,7 @@ export async function rebuildIndexFiles(readFile, writeFile, listTree) {
         const fp = f.path || `people/${f.name}`
         const raw = await readFile(fp)
         const { fields, body } = parseFrontmatter(raw)
-        const name = String(fields?.full_name || fields?.name || humanizeName(f.name)).trim()
+        const name = resolveDisplayName(fields, body, f.name, 'full_name', 'name')
         exactEntityNames.push(name)
 
         const role = String(fields?.role || '').trim()
@@ -347,7 +365,7 @@ export async function rebuildIndexFiles(readFile, writeFile, listTree) {
         const fp = f.path || `projects/${f.name}`
         const raw = await readFile(fp)
         const { fields, body } = parseFrontmatter(raw)
-        const name = String(fields?.name || humanizeName(f.name)).trim()
+        const name = resolveDisplayName(fields, body, f.name, 'name')
         exactEntityNames.push(name)
 
         const status = String(fields?.status || '').trim()
@@ -388,7 +406,7 @@ export async function rebuildIndexFiles(readFile, writeFile, listTree) {
         const fp = f.path || `ideas/${f.name}`
         const raw = await readFile(fp)
         const { fields, body } = parseFrontmatter(raw)
-        const name = String(fields?.name || humanizeName(f.name)).trim()
+        const name = resolveDisplayName(fields, body, f.name, 'name')
         exactEntityNames.push(name)
 
         const status = String(fields?.status || '').trim()
@@ -455,7 +473,8 @@ export async function rebuildContext(readFile, writeFile, settings, entityNameMa
 3. Resurface items if they appear in recent notes (check for name matches in activity log)
 4. Enforce max 5 items per section: Narrative thread (narrative only), Current focus (top priorities right now), Active projects, Standing decisions, Key people
 5. Write _context.md as clean markdown. Be selective — only what matters right now.
-6. Entity names must be preserved exactly as they appear in the source files, including dots, hyphens, and special characters. For example: Ubuntu.com Home Page Revamp, NOT Ubuntucom Home Page Revamp. Never normalise or alter entity names.`
+6. Entity names must be preserved exactly as they appear in the source files, including dots, hyphens, and special characters. For example: Ubuntu.com Home Page Revamp, NOT Ubuntucom Home Page Revamp. Never normalise or alter entity names.
+7. Never include self-correction text, parenthetical notes, or meta-commentary in your output. Output only clean, structured content.`
 
     const userPrompt = `Today's date: ${today}
 14-day cutoff: ${cutoff14}
@@ -491,7 +510,7 @@ Output format — use EXACTLY these delimiters, no exceptions:
 [max 5 decisions relevant to active work. Add new ones from recent activity if any.]
 
 ## Key people
-[max 5 people who appear in recent activity. One bullet per person with why they are relevant right now.]
+List up to 5 people from people-index.md only. Never include project names, idea names, or any entity that is not a person. Each entry: one line, format: "* [Name]: [one sentence on why they are relevant right now]"
 
 ===REMOVED===
 [One line per removed item: "item text | reason it was removed". If nothing removed, write exactly: (none)]
@@ -528,6 +547,46 @@ Output format — use EXACTLY these delimiters, no exceptions:
       await appendToContextLog(readFile, writeFile, repairedContext)
     } catch (err) {
       console.warn('Failed to append to context log:', err?.message || err)
+    }
+
+    // ── Step 4b: Generate week summary ──────────────────────────────────────
+
+    try {
+      const cutoff7 = new Date(Date.now() - 7 * 86_400_000).toISOString()
+      const weekEntries = allEntries
+        .filter((e) => String(e?.timestamp || '') >= cutoff7)
+        .sort((a, b) => String(a?.timestamp || '').localeCompare(String(b?.timestamp || '')))
+
+      const weekLines = weekEntries.length > 0
+        ? weekEntries
+            .map((e) => `${String(e.timestamp || '').slice(0, 10)} — ${String(e.summary || '').trim()}`)
+            .join('\n')
+        : '(no activity in the last 7 days)'
+
+      const weekPrompt = `Based on the activity log entries and current context below, write a single paragraph (3-4 sentences) summarising what happened this week: what was worked on, what moved forward, what is still pending. Write in third person, past tense for completed items, present tense for ongoing. No bullet points. No headings.
+
+Activity log (last 7 days):
+${weekLines}
+
+Current context:
+${repairedContext}`
+
+      const weekRaw = await callLLM(
+        [{ role: 'user', content: weekPrompt }],
+        'You are a concise summariser. Write exactly one paragraph with no headings or bullet points.',
+        settings,
+        150
+      )
+
+      const weekText = stripMarkdownFences(weekRaw).trim()
+      if (weekText) {
+        await writeFile(
+          'context/week-summary.json',
+          JSON.stringify({ text: weekText, generated_at: new Date().toISOString() }, null, 2)
+        )
+      }
+    } catch (err) {
+      console.warn('[rebuildContext] week-summary generation failed (non-fatal):', err?.message || err)
     }
 
     // ── Step 5: Bookkeeping ─────────────────────────────────────────────────
