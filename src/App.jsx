@@ -19,6 +19,9 @@ import SettingsPage from './core/SettingsPage'
 import ProcessedNoteViewer from './core/ProcessedNoteViewer'
 import PersonViewer from './core/PersonViewer'
 import ProjectViewer from './core/ProjectViewer'
+import IdeaViewer from './core/IdeaViewer'
+import PlansPage from './core/PlansPage'
+import IdeaBacklogPage from './core/IdeaBacklogPage'
 
 const InboxPage = lazy(() => import('./core/InboxPage'))
 const NotesPage = lazy(() => import('./core/NotesPage'))
@@ -89,6 +92,7 @@ export default function App() {
   const [dashboardRefreshKey, setDashboardRefreshKey] = useState(0)
   const [tasksVersion, setTasksVersion] = useState(0)
   const [newFilePaths, setNewFilePaths] = useState(() => new Set())
+  const [ideaBacklogCount, setIdeaBacklogCount] = useState(0)
 
   // Persist newFilePaths to IndexedDB so chip survives reload
   useEffect(() => {
@@ -169,6 +173,11 @@ export default function App() {
     const suggestions = []
     for (const [folder, entries] of Object.entries(tree)) {
       if (!Array.isArray(entries)) continue
+      // Exclude ideas folder when ideas module is disabled
+      if (folder === 'ideas' && settings?.enabledModules?.ideas === false) continue
+      // Exclude people/projects when those modules are disabled
+      if (folder === 'people' && settings?.enabledModules?.people === false) continue
+      if (folder === 'projects' && settings?.enabledModules?.projects === false) continue
       for (const entry of entries) {
         if (!entry || entry.kind !== 'file') continue
         const path = `${folder}/${entry.name}`
@@ -182,7 +191,7 @@ export default function App() {
     }
     suggestions.sort((a, b) => (RANK[a.type] ?? 3) - (RANK[b.type] ?? 3) || a.name.localeCompare(b.name))
     return suggestions
-  }, [tree])
+  }, [tree, settings?.enabledModules])
 
   const showConfirm = ({ title, message, confirmLabel = 'Delete', danger = true, onConfirm }) => {
     setConfirmDialog({ open: true, title, message, confirmLabel, danger, onConfirm })
@@ -244,7 +253,8 @@ export default function App() {
         setTree(bySection)
       })
       .catch(() => setTree({}))
-  }, [vaultReady, listTree, vaultInitialised])
+    refreshBacklogCount()
+  }, [vaultReady, listTree, vaultInitialised, refreshBacklogCount])
 
   const navigate = (page, file = null) => {
     if (file) {
@@ -308,6 +318,18 @@ export default function App() {
     }
   }, [])
 
+  const refreshBacklogCount = useCallback(async () => {
+    try {
+      const raw = await readFile('ideas/backlog.md')
+      const match = raw.match(/##\s+Backlog\s*\n([\s\S]*?)(?=\n##\s|$)/i)
+      if (!match) { setIdeaBacklogCount(0); return }
+      const count = match[1].split('\n').filter((l) => /^-\s+/.test(l.trimStart())).length
+      setIdeaBacklogCount(count)
+    } catch {
+      setIdeaBacklogCount(0)
+    }
+  }, [readFile])
+
   const refreshTree = () => {
     listTree()
       .then((result) => {
@@ -320,6 +342,7 @@ export default function App() {
         setTree(bySection)
       })
       .catch(() => {})
+    refreshBacklogCount()
   }
 
   const migrateTasksArchive = async () => {
@@ -580,6 +603,7 @@ export default function App() {
         folderName={folderName}
         isBusy={sidebarBusy}
         openTaskCount={null}
+        ideaBacklogCount={ideaBacklogCount}
         tree={tree}
         onNavigate={navigate}
         onOpenFolder={openFolder}
@@ -613,6 +637,26 @@ export default function App() {
             fileExists={fileExists}
             listTree={listTree}
             settings={settings}
+          />
+        )}
+        {activePage === 'plans'    && (
+          <PlansPage
+            readFile={readFile}
+            writeFile={writeFile}
+            listTree={listTree}
+            settings={settings}
+            onNavigate={navigate}
+          />
+        )}
+        {activePage === 'ideas-backlog' && (
+          <IdeaBacklogPage
+            readFile={readFile}
+            writeFile={writeFile}
+            fileExists={fileExists}
+            onNavigate={(page, file) => {
+              refreshBacklogCount()
+              navigate(page, file)
+            }}
           />
         )}
         {activePage === 'inbox'    && (
@@ -739,6 +783,31 @@ export default function App() {
             />
           </Suspense>
         )}
+        {activePage === 'viewer' && activeFile?.startsWith('ideas/') && (
+          <Suspense fallback={<PageLoading />}>
+            <IdeaViewer
+              filePath={activeFile}
+              readFile={readFile}
+              writeFile={writeFile}
+              listTree={listTree}
+              deleteFile={deleteFile}
+              renameFile={renameFile}
+              fileExists={fileExists}
+              tasksVersion={tasksVersion}
+              wikilinkSuggestions={wikilinkSuggestions}
+              onNavigate={navigate}
+              onTasksChanged={refreshTasks}
+              onFileRenamed={handleFileRenamed}
+              onConfirmAction={showConfirm}
+              onDisplayNameChanged={handleDisplayNameChanged}
+              onFileDeleted={() => {
+                refreshTree()
+                setActiveFile(null)
+                setActivePage('command')
+              }}
+            />
+          </Suspense>
+        )}
         {activePage === 'viewer' && (activeFile === 'archive/tasks_done.md' || activeFile === 'archive/tasks-archive.md') && (
           <Suspense fallback={<PageLoading />}>
             <ArchiveViewer
@@ -748,7 +817,7 @@ export default function App() {
             />
           </Suspense>
         )}
-        {activePage === 'viewer' && activeFile && !activeFile.startsWith('notes/') && !activeFile.startsWith('people/') && !activeFile.startsWith('projects/') && activeFile !== 'archive/tasks_done.md' && activeFile !== 'archive/tasks-archive.md' && (
+        {activePage === 'viewer' && activeFile && !activeFile.startsWith('notes/') && !activeFile.startsWith('people/') && !activeFile.startsWith('projects/') && !activeFile.startsWith('ideas/') && activeFile !== 'archive/tasks_done.md' && activeFile !== 'archive/tasks-archive.md' && (
           <Suspense fallback={<PageLoading />}>
             <VaultFileViewer
               filePath={activeFile}

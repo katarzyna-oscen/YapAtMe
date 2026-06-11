@@ -55,6 +55,21 @@ function Icon({ name, size = 14 }) {
           <path d="M13 2.5V5h-2.5" />
         </svg>
       )
+    case 'layers':
+      return (
+        <svg viewBox="0 0 16 16" style={s} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 2 14 5 8 8 2 5 8 2Z" />
+          <path d="M2 8 8 11 14 8" />
+          <path d="M2 11 8 14 14 11" />
+        </svg>
+      )
+    case 'idea':
+      return (
+        <svg viewBox="0 0 16 16" style={s} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M5.5 10.5a4 4 0 1 1 5 0v1.5h-5z" />
+          <path d="M6 14h4" />
+        </svg>
+      )
     default:
       return null
   }
@@ -399,6 +414,7 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
             const isContext = folder === 'context'
               || file.path === 'archive/tasks-archive.md'
               || file.path === 'archive/tasks_done.md'
+              || file.path === 'ideas/backlog.md'
             const isNew = newFilePaths?.has?.(file.path)
             return (
               <div
@@ -716,6 +732,7 @@ export default function Sidebar({
   folderName,
   isBusy,
   openTaskCount,
+  ideaBacklogCount,
   tree,
   onNavigate,
   onOpenFolder,
@@ -750,7 +767,9 @@ export default function Sidebar({
       .filter((file) =>
         !file.name.startsWith('.')
         && !file.name.startsWith('_moved')
-        && !(section === 'archive' && file.name === 'tasks.md')      )
+        && !(section === 'archive' && file.name === 'tasks.md')
+        && !(section === 'ideas'   && file.name === 'backlog.md')
+      )
       .sort((a, b) => {
         if (section === 'notes' || section === 'inbox') {
           const aDate = parseFilenameDateKey(a)
@@ -847,6 +866,12 @@ export default function Sidebar({
       >
         <NavItem icon="grid" label="Command center" active={page === 'command'} badge="sync" onClick={() => onNavigate('command')} onBadgeClick={onRefreshDashboard} />
         <NavItem icon="check" label="Tasks" active={page === 'tasks'} badge={openTaskCount || null} onClick={() => onNavigate('tasks')} />
+        {(enabledModules.projects || enabledModules.ideas) && (
+          <NavItem icon="layers" label="Plans" active={page === 'plans'} onClick={() => onNavigate('plans')} />
+        )}
+        {enabledModules.ideas && (
+          <NavItem icon="idea" label="Ideas backlog" active={page === 'ideas-backlog'} badge={ideaBacklogCount || null} onClick={() => onNavigate('ideas-backlog')} />
+        )}
       </nav>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '10px 8px 16px' }}>
