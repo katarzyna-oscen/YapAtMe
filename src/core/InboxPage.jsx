@@ -383,7 +383,7 @@ function dedupeRoutingChanges(changes = []) {
 function stripHashtagRoutingLines(markdown) {
   return String(markdown || '')
     .split('\n')
-    .map((line) => line.replace(/\s*#(?:action|decision|delegate|follow-up|important|urgent)\b/gi, ''))
+    .map((line) => line.replace(/\s*#(?:action|decision|delegate|follow-up|important|urgent|idea)\b/gi, ''))
     .map((line) => line.replace(/\s{2,}/g, ' ').trimEnd())
     .join('\n')
 }
@@ -545,6 +545,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
   const wikilinkSuggestions = useMemo(() => {
     const TYPE_MAP = { people: 'person', projects: 'project', ideas: 'idea' }
     const RANK = { person: 0, project: 1, idea: 2, note: 3 }
+    const em = settings?.enabledModules || {}
     const seen = new Set()
     const suggestions = []
     for (const path of allowedFiles) {
@@ -552,6 +553,10 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
       seen.add(path)
       const parts = path.split('/')
       const folder = parts[0]
+      // Exclude files from disabled modules
+      if (folder === 'people'    && em.people    === false) continue
+      if (folder === 'projects'  && em.projects  === false) continue
+      if (folder === 'ideas'     && em.ideas     === false) continue
       const base = (parts[parts.length - 1] || '').replace(/\.md$/i, '')
       if (!base) continue
       const name = base.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
@@ -559,7 +564,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
     }
     suggestions.sort((a, b) => (RANK[a.type] ?? 3) - (RANK[b.type] ?? 3) || a.name.localeCompare(b.name))
     return suggestions
-  }, [allowedFiles])
+  }, [allowedFiles, settings?.enabledModules])
 
   const queueSave = (body, heading = title) => {
     clearTimeout(saveTimer.current)
@@ -768,6 +773,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
     const noteForLLM = alreadyNormalizedHeading ? noteForLLMRaw : normalizeInboxMarkdown(splitMergedDateHeading(noteForLLMRaw))
     const moduleRoutingOptions = {
       peopleModuleEnabled: settings?.enabledModules?.people !== false,
+      ideasModuleEnabled: settings?.enabledModules?.ideas !== false,
       writerFile: settings?.writerFile || '',
     }
     const enabledFolders = ['projects', 'people', 'ideas'].filter((folder) => settings?.enabledModules?.[folder] !== false)
@@ -874,6 +880,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
 
     await applyChange(readFile, writeFile, change, filePath, {
       peopleModuleEnabled: settings?.enabledModules?.people !== false,
+      ideasModuleEnabled: settings?.enabledModules?.ideas !== false,
       writerFile: settings?.writerFile || '',
     })
     setApprovedChangeIds((prev) => new Set([...prev, change.id]))

@@ -5,6 +5,7 @@ const HASHTAG_MARKER_MAP = {
   'follow-up': { marker: 'follow-up', section: '## Talk About' },
   important: { marker: 'important', section: '## Open Actions' },
   urgent: { marker: 'urgent', section: '## Open Actions' },
+  idea: { marker: 'idea', section: '## Backlog' },
 }
 
 export function extractHashtags(noteBody) {
@@ -49,15 +50,29 @@ export function extractHashtagChanges(noteBody, noteFilename) {
 
     if (routingTags.length === 0) continue
 
-    const wikilinkMatches = [...trimmed.matchAll(/\[\[([^\]]+)\]\]/g)]
-    if (wikilinkMatches.length === 0) continue
-
     const tag = routingTags[0]
     const { marker, section } = HASHTAG_MARKER_MAP[tag]
     const cleanLine = trimmed
       .replace(/#[a-z][a-z0-9_-]*/gi, '')
       .replace(/\s+/g, ' ')
       .trim()
+
+    // #idea lines route directly to ideas/backlog.md — no entity wikilink required
+    if (tag === 'idea') {
+      changes.push({
+        id: `hashtag-idea-${changes.length}`,
+        title: cleanLine,
+        content: `- [[${date}]] ${cleanLine}`,
+        target_file: 'ideas/backlog.md',
+        target_section: section,
+        marker,
+        fromHashtag: true,
+      })
+      continue
+    }
+
+    const wikilinkMatches = [...trimmed.matchAll(/\[\[([^\]]+)\]\]/g)]
+    if (wikilinkMatches.length === 0) continue
 
     for (const wikilink of wikilinkMatches) {
       const entityName = wikilink[1]
@@ -86,6 +101,8 @@ export function resolveHashtagTargets(hashtagChanges, allowedFiles = []) {
 
   return (hashtagChanges || [])
     .map((change) => {
+      // Idea changes already have target_file set — pass through without entity resolution
+      if (change?.marker === 'idea' && change?.target_file === 'ideas/backlog.md') return change
       if (!change?.entityName) return null
       const slug = slugifyEntityName(change.entityName)
       const peopleFile = resolveEntityPath(slug, 'people')
