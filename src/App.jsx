@@ -237,6 +237,18 @@ export default function App() {
     }).catch(() => {})
   }
 
+  const refreshBacklogCount = useCallback(async () => {
+    try {
+      const raw = await readFile('ideas/backlog.md')
+      const match = raw.match(/##\s+Backlog\s*\n([\s\S]*?)(?=\n##\s|$)/i)
+      if (!match) { setIdeaBacklogCount(0); return }
+      const count = match[1].split('\n').filter((l) => /^-\s+/.test(l.trimStart())).length
+      setIdeaBacklogCount(count)
+    } catch {
+      setIdeaBacklogCount(0)
+    }
+  }, [readFile])
+
   useEffect(() => {
     if (!vaultReady) return
     createTodayNoteIfMissing()
@@ -317,18 +329,6 @@ export default function App() {
       }
     }
   }, [])
-
-  const refreshBacklogCount = useCallback(async () => {
-    try {
-      const raw = await readFile('ideas/backlog.md')
-      const match = raw.match(/##\s+Backlog\s*\n([\s\S]*?)(?=\n##\s|$)/i)
-      if (!match) { setIdeaBacklogCount(0); return }
-      const count = match[1].split('\n').filter((l) => /^-\s+/.test(l.trimStart())).length
-      setIdeaBacklogCount(count)
-    } catch {
-      setIdeaBacklogCount(0)
-    }
-  }, [readFile])
 
   const refreshTree = () => {
     listTree()
@@ -653,10 +653,12 @@ export default function App() {
             readFile={readFile}
             writeFile={writeFile}
             fileExists={fileExists}
-            onNavigate={(page, file) => {
+            onFileCreated={async () => {
+              await invalidateFileIndex()
+              refreshTree()
               refreshBacklogCount()
-              navigate(page, file)
             }}
+            onNavigate={navigate}
           />
         )}
         {activePage === 'inbox'    && (

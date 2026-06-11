@@ -364,7 +364,7 @@ import { useRef } from 'react'
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function IdeaBacklogPage({ readFile, writeFile, fileExists, onNavigate }) {
+export default function IdeaBacklogPage({ readFile, writeFile, fileExists, onNavigate, onFileCreated }) {
   const [items, setItems]           = useState([])
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES)
   const [loading, setLoading]       = useState(true)
@@ -414,41 +414,45 @@ export default function IdeaBacklogPage({ readFile, writeFile, fileExists, onNav
     await persist(newItems)
   }, [items, persist])
 
+  const [promoteError, setPromoteError] = useState(null)
+
   const handlePromote = useCallback(async (item) => {
-    // Build slug from summary
-    const slug = (() => {
-      const base = item.summary
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .trim()
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '')
-        .slice(0, 60)
-      return base.charAt(0).toUpperCase() + base.slice(1) || 'Untitled'
-    })()
-
-    const today = todayISO()
-    // Derive origin date from source "DD-MM-YYYY" → "YYYY-MM-DD"
-    let origin = today
-    if (item.source) {
-      const [d, m, y] = item.source.split('-')
-      if (d && m && y) origin = `${y}-${m}-${d}`
-    }
-
-    const domain = item.category ? item.category.toLowerCase() : ''
-    const filePath = `ideas/${slug}.md`
-
-    // Avoid overwriting existing file
-    let finalPath = filePath
+    setPromoteError(null)
     try {
-      const exists = await fileExists(filePath)
-      if (exists) {
-        finalPath = `ideas/${slug}-${Date.now()}.md`
-      }
-    } catch {}
+      // Build slug from summary
+      const slug = (() => {
+        const base = item.summary
+          .toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, '')
+          .trim()
+          .replace(/\s+/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '')
+          .slice(0, 60)
+        return base.charAt(0).toUpperCase() + base.slice(1) || 'Untitled'
+      })()
 
-    const content = `---
+      const today = todayISO()
+      // Derive origin date from source "DD-MM-YYYY" → "YYYY-MM-DD"
+      let origin = today
+      if (item.source) {
+        const [d, m, y] = item.source.split('-')
+        if (d && m && y) origin = `${y}-${m}-${d}`
+      }
+
+      const domain = item.category ? item.category.toLowerCase() : ''
+      const filePath = `ideas/${slug}.md`
+
+      // Avoid overwriting existing file
+      let finalPath = filePath
+      try {
+        const exists = await fileExists(filePath)
+        if (exists) {
+          finalPath = `ideas/${slug}-${Date.now()}.md`
+        }
+      } catch {}
+
+      const content = `---
 type: idea
 name: ${item.summary}
 domain: ${domain}
@@ -477,16 +481,21 @@ ${item.source ? `Spotted in note [[${item.source}]].` : 'From ideas backlog.'}
 
 ## Recent Mentions
 `
-    await writeFile(finalPath, content)
+      await writeFile(finalPath, content)
+      await onFileCreated?.()
 
-    // Remove from backlog
-    const newItems = items.filter((it) => it.id !== item.id)
-    setItems(newItems)
-    await persist(newItems)
+      // Remove from backlog and persist before navigating
+      const newItems = items.filter((it) => it.id !== item.id)
+      setItems(newItems)
+      await persist(newItems)
 
-    // Navigate to new idea
-    onNavigate?.('viewer', finalPath)
-  }, [items, persist, fileExists, writeFile, onNavigate])
+      // Navigate to new idea
+      onNavigate?.('viewer', finalPath)
+    } catch (err) {
+      console.error('[IdeaBacklog] promote failed:', err)
+      setPromoteError(err?.message || String(err))
+    }
+  }, [items, persist, fileExists, writeFile, onNavigate, onFileCreated])
 
   const count = items.length
 
@@ -524,6 +533,16 @@ ${item.source ? `Spotted in note [[${item.source}]].` : 'From ideas backlog.'}
           <span style={{ fontFamily: 'monospace', color: 'var(--accent, oklch(0.85 0.16 95))' }}>#idea</span>
           {' '}tags in notes route here automatically.
         </p>
+
+        {promoteError && (
+          <div style={{
+            margin: '0 0 16px', padding: '10px 14px', borderRadius: 8,
+            background: 'oklch(0.70 0.18 22 / 0.12)', border: '1px solid oklch(0.70 0.18 22 / 0.35)',
+            color: 'oklch(0.84 0.16 22)', fontSize: 13,
+          }}>
+            Failed to create idea: {promoteError}
+          </div>
+        )}
 
         {count === 0 ? (
           <div style={{
