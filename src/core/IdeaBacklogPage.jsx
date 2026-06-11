@@ -40,7 +40,9 @@ function parseBacklog(raw) {
       // Extract source date wikilink
       const srcMatch = rest.match(SOURCE_RE)
       const source = srcMatch ? srcMatch[1].trim() : null
-      const summary = srcMatch ? rest.slice(srcMatch[0].length).trim() : rest.trim()
+      // Strip any leading em-dash separator left by older entries (e.g. "— Summary" → "Summary")
+      let summary = srcMatch ? rest.slice(srcMatch[0].length).trim() : rest.trim()
+      summary = summary.replace(/^[—–-]+\s*/, '')
 
       if (!summary) return null
       return { id: `item-${idx}`, line, summary, source, category }

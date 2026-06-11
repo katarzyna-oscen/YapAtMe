@@ -64,13 +64,24 @@ function normalizeMentionForCompare(line) {
     .trim()
 }
 
-function normalizeChangeForModules(change, { peopleModuleEnabled = true, writerFile = '' } = {}) {
+function normalizeChangeForModules(change, { peopleModuleEnabled = true, ideasModuleEnabled = true, writerFile = '' } = {}) {
   const marker = String(change?.marker || '').toLowerCase()
   const targetFile = String(change?.target_file || '')
   const normalizedWriterFile = String(writerFile || '').trim().toLowerCase()
   const isWriterTarget = normalizedWriterFile && targetFile.toLowerCase() === normalizedWriterFile
 
   if (isWriterTarget) return change
+
+  // Ideas module gating
+  if (!ideasModuleEnabled) {
+    const targetFolder = String(change?.target_file || '').split('/')[0]
+    if (targetFolder === 'ideas') {
+      if (marker === 'mention') return null // drop mention to ideas
+      // idea/action marker → reroute to unattached
+      return { ...change, target_file: null, module: 'unattached', marker: 'action' }
+    }
+  }
+
   if (peopleModuleEnabled) return change
 
   if (marker === 'mention') {
@@ -171,11 +182,25 @@ export async function applyChange(readFile, writeFile, change, noteFilename, opt
 
   if (!change?.target_file) return
 
+  // ideas/backlog.md items must be formatted as bullet lines for the backlog parser.
+  // The LLM emits: "[[DD-MM-YYYY]] — Summary" — ensure it becomes "- [[DD-MM-YYYY]] Summary"
+  let writeContent = change.content
+  const isBacklogWrite = String(change.target_file).toLowerCase() === 'ideas/backlog.md'
+    && String(change.target_section || '').trim() === '## Backlog'
+  if (isBacklogWrite) {
+    // Strip leading em-dash separator after the source wikilink, e.g. "[[date]] — text" → "[[date]] text"
+    writeContent = writeContent.replace(/^(\[\[[^\]]+\]\])\s*[—–-]+\s*/, '$1 ')
+    // Ensure the line starts with a bullet
+    if (!/^-\s+/.test(writeContent.trimStart())) {
+      writeContent = `- ${writeContent.trimStart()}`
+    }
+  }
+
   await appendToSection(
     readFile,
     writeFile,
     change.target_file,
     change.target_section,
-    change.content
+    writeContent
   )
 }
