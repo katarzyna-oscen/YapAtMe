@@ -203,10 +203,20 @@ function ActivityHeatmap({ cells = [] }) {
   )
 }
 
-function TopBar({ stats, activityData }) {
+function TopBar({ stats, activityData, contextLastRebuild }) {
   const date = new Date().toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric',
   }).toUpperCase()
+
+  const rebuildLabel = contextLastRebuild
+    ? (() => {
+        const d = new Date(contextLastRebuild)
+        if (isNaN(d.getTime())) return null
+        const day  = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(d)
+        const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
+        return `${day} ${time}`
+      })()
+    : null
 
   return (
     <div style={{
@@ -247,6 +257,14 @@ function TopBar({ stats, activityData }) {
           <StatChip label="projects" value={stats.projects} />
           <StatChip label="stale" value={stats.stale} tone={stats.stale > 0 ? 'warn' : null} />
           <StatChip label="open tasks" value={stats.actions} />
+          {rebuildLabel && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-very-dim)', fontSize: 12.5 }}>
+              <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" style={{ opacity: 0.6 }}>
+                <path d="M8 1a7 7 0 1 0 7 7A7 7 0 0 0 8 1zm.5 10h-1v-5h1zm0-6h-1V4h1z"/>
+              </svg>
+              Context rebuilt {rebuildLabel}
+            </span>
+          )}
         </div>
       </div>
 
@@ -458,76 +476,11 @@ function NeedsCallSection({ needsCall, onResolveTask, onDismissNeedsCall, onNeed
 
 // ─── Summary + Updates ───────────────────────────────────────────────────────
 
-function SummaryCard({ title, data, loading, canGenerate, onGenerate, placeholder }) {
-  const ts = data?.generated_at
-    ? new Date(data.generated_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    : null
-  return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: '16px 18px 14px', minHeight: 180 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <h3
-            style={{
-              fontSize: 15.5,
-              fontWeight: 600,
-              color: 'var(--text)',
-              margin: '0 24px 8px 0',
-              lineHeight: 1.3,
-              letterSpacing: '-0.005em',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            }}
-          >
-            {title}
-          </h3>
-          <button
-            type="button"
-            onClick={onGenerate}
-            disabled={!canGenerate || loading}
-            style={{
-              border: '1px solid var(--border)',
-              background: 'var(--panel-2)',
-              color: !canGenerate || loading ? 'var(--text-very-dim)' : 'var(--text-dim)',
-              borderRadius: 6,
-              padding: '4px 8px',
-              fontSize: 11,
-              cursor: !canGenerate || loading ? 'default' : 'pointer',
-            }}
-          >
-            {loading ? 'Generating…' : 'Generate'}
-          </button>
-        </div>
-
-        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit', color: 'var(--text-dim)', fontSize: 13, lineHeight: 1.6, flex: 1 }}>
-          {data?.text || placeholder}
-        </pre>
-
-        <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>{`updated ${ts || '—'}`}</span>
-          {data?.sourceComment && <span>{data.sourceComment}</span>}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function formatRebuildTimestamp(timestamp) {
-  if (!timestamp) return null
-  const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return null
-  const day = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(date)
-  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(date)
-  return `updated ${day}, ${time}`
-}
-
 function renderContextContent(text) {
   if (!text) return null
   const lines = text.split('\n')
   const out = []
   let bulletGroup = []
-
   const flushBullets = () => {
     if (bulletGroup.length === 0) return
     out.push(
@@ -539,7 +492,6 @@ function renderContextContent(text) {
     )
     bulletGroup = []
   }
-
   for (const line of lines) {
     const bulletMatch = line.match(/^[*\-]\s+(.*)$/)
     if (bulletMatch) {
@@ -547,63 +499,71 @@ function renderContextContent(text) {
     } else {
       flushBullets()
       const trimmed = line.trim()
-      if (trimmed) {
-        out.push(<p key={`p-${out.length}`} style={{ margin: '0 0 6px' }}>{trimmed}</p>)
-      }
+      if (trimmed) out.push(<p key={`p-${out.length}`} style={{ margin: '0 0 6px' }}>{trimmed}</p>)
     }
   }
   flushBullets()
   return out
 }
 
-function ContextCard({ title, content, loading, placeholder, footer }) {
-  return (
-    <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--panel)', padding: '16px 18px 14px', minHeight: 180 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-        <h3
-          style={{
-            fontSize: 15.5,
-            fontWeight: 600,
-            color: 'var(--text)',
-            margin: '0 0 8px',
-            lineHeight: 1.3,
-            letterSpacing: '-0.005em',
-          }}
-        >
-          {title}
-        </h3>
+function fmtGeneratedAt(isoStr) {
+  if (!isoStr) return null
+  const d = new Date(isoStr)
+  if (isNaN(d.getTime())) return null
+  const day  = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(d)
+  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
+  return `Generated ${day}, ${time}`
+}
 
-        <div style={{ margin: 0, color: loading ? 'var(--text-very-dim)' : 'var(--text-dim)', fontSize: 13, lineHeight: 1.6, flex: 1 }}>
-          {loading
-            ? 'Rebuilding context…'
-            : (content ? renderContextContent(content) : <span style={{ color: 'var(--text-very-dim)' }}>{placeholder}</span>)
-          }
-        </div>
-
-        {footer && (
-          <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11.5, color: 'var(--text-very-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>{footer}</span>
-          </div>
-        )}
-      </div>
-    </div>
-  )
+function renderUpdatesText(text) {
+  if (!text) return null
+  const lines = String(text).split('\n').filter(l => l.trim())
+  return lines.map((line, i) => {
+    const bullet = line.match(/^[-*]\s+(.+)$/)
+    const content = bullet ? bullet[1] : line
+    return (
+      <li key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
+        <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="oklch(0.74 0.14 165)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: '0 0 11px', marginTop: 3 }}>
+          <path d="m3 8 3.5 3.5L13 5" />
+        </svg>
+        <span style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.5 }}>{content}</span>
+      </li>
+    )
+  })
 }
 
 function SummaryRow({
   narrativeThread,
   currentFocus,
   contextLastRebuild,
-  contextLoading,
-  weekSummary,
   dailyUpdates,
-  summaryLoading,
-  updatesLoading,
+  summariesLoading,
   hasApiKey,
-  onGenerateSummary,
-  onGenerateUpdates,
-  onRebuildContext,
+  onGenerateSummaries,
 }) {
+  const canGenerate = hasApiKey && !summariesLoading
+  const cardStyle = (tone) => ({
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    background: `linear-gradient(180deg, oklch(0.72 0.13 ${tone} / 0.05), transparent 65%), var(--panel)`,
+    padding: '16px 18px 14px',
+    minHeight: 180,
+    display: 'flex',
+    flexDirection: 'column',
+    opacity: summariesLoading ? 0.5 : 1,
+    transition: 'opacity 0.3s ease',
+    animation: summariesLoading ? 'ms-pulse 1.4s ease-in-out infinite' : 'none',
+  })
+  const footerTs = contextLastRebuild
+    ? (() => {
+        const d = new Date(contextLastRebuild)
+        if (isNaN(d.getTime())) return null
+        const day  = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(d)
+        const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }).format(d)
+        return `Generated ${day}, ${time}`
+      })()
+    : null
+
   return (
     <section style={{ padding: '20px 48px 0' }}>
       <SectionHeader
@@ -611,50 +571,94 @@ function SummaryRow({
         right={(
           <button
             type="button"
-            onClick={onRebuildContext}
-            disabled={!hasApiKey || contextLoading}
+            onClick={onGenerateSummaries}
+            disabled={!canGenerate}
             style={{
-              border: '1px solid var(--border)',
-              background: 'var(--panel-2)',
-              color: !hasApiKey || contextLoading ? 'var(--text-very-dim)' : 'var(--text-dim)',
-              borderRadius: 6,
+              display: 'inline-flex', alignItems: 'center', gap: 5,
               padding: '4px 10px',
-              fontSize: 11,
-              cursor: !hasApiKey || contextLoading ? 'default' : 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
+              background: !hasApiKey ? 'transparent' : 'oklch(0.80 0.13 80 / 0.12)',
+              color: !hasApiKey ? 'var(--text-very-dim)' : 'oklch(0.88 0.13 80)',
+              border: `1px solid ${!hasApiKey ? 'var(--border)' : 'oklch(0.80 0.13 80 / 0.36)'}`,
+              borderRadius: 6, fontSize: 11.5, fontWeight: 500,
+              cursor: canGenerate ? 'pointer' : 'default',
+              fontFamily: 'inherit', transition: 'background .15s, border-color .15s',
+              opacity: !hasApiKey ? 0.5 : 1,
             }}
+            onMouseEnter={e => { if (canGenerate) { e.currentTarget.style.background = 'oklch(0.80 0.13 80 / 0.22)'; e.currentTarget.style.borderColor = 'oklch(0.80 0.13 80 / 0.55)' }}}
+            onMouseLeave={e => { e.currentTarget.style.background = !hasApiKey ? 'transparent' : 'oklch(0.80 0.13 80 / 0.12)'; e.currentTarget.style.borderColor = !hasApiKey ? 'var(--border)' : 'oklch(0.80 0.13 80 / 0.36)' }}
           >
-            {contextLoading && (
-              <span style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px solid currentColor', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
-            )}
-            {contextLoading ? 'Rebuilding…' : 'Rebuild context'}
+            {summariesLoading
+              ? <span style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px solid oklch(0.88 0.13 80)', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite', display: 'inline-block' }} />
+              : (
+                <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                  <path d="M8 1 L9.2 6.8 L15 8 L9.2 9.2 L8 15 L6.8 9.2 L1 8 L6.8 6.8 Z" />
+                </svg>
+              )
+            }
+            {summariesLoading ? 'Generating…' : 'Generate summaries'}
           </button>
         )}
       />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
-        <ContextCard
-          title="Narrative thread"
-          content={narrativeThread}
-          loading={contextLoading}
-          placeholder="Context not yet built — click Rebuild to generate."
-          footer={contextLoading ? 'Refreshing context…' : (formatRebuildTimestamp(contextLastRebuild) || 'never rebuilt')}
-        />
-        <ContextCard
-          title="Current focus"
-          content={currentFocus}
-          loading={contextLoading}
-          placeholder="No focus data yet."
-        />
-        <SummaryCard
-          title="Updates"
-          data={dailyUpdates}
-          loading={updatesLoading}
-          canGenerate={hasApiKey}
-          onGenerate={onGenerateUpdates}
-          placeholder="No updates yet."
-        />
+        {/* Narrative thread */}
+        <div style={cardStyle(240)}>
+          <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em' }}>
+            Narrative thread
+          </h3>
+          <div style={{ flex: 1, color: summariesLoading ? 'var(--text-very-dim)' : 'var(--text-dim)', fontSize: 13, lineHeight: 1.6 }}>
+            {summariesLoading
+              ? 'Rebuilding context…'
+              : narrativeThread
+                ? renderContextContent(narrativeThread)
+                : <span style={{ color: 'var(--text-very-dim)' }}>Context not yet built — click Generate summaries to create.</span>
+            }
+          </div>
+          {footerTs && (
+            <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11, letterSpacing: '0.04em', color: 'var(--text-very-dim)' }}>
+              {footerTs}
+            </div>
+          )}
+        </div>
+
+        {/* Current focus */}
+        <div style={cardStyle(150)}>
+          <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em' }}>
+            Current focus
+          </h3>
+          <div style={{ flex: 1, color: summariesLoading ? 'var(--text-very-dim)' : 'var(--text-dim)', fontSize: 13, lineHeight: 1.6 }}>
+            {summariesLoading
+              ? 'Rebuilding context…'
+              : currentFocus
+                ? renderContextContent(currentFocus)
+                : <span style={{ color: 'var(--text-very-dim)' }}>No focus data yet.</span>
+            }
+          </div>
+        </div>
+
+        {/* Updates */}
+        <div style={cardStyle(80)}>
+          <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em' }}>
+            Updates
+          </h3>
+          <div style={{ flex: 1 }}>
+            {summariesLoading
+              ? <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>Generating updates…</span>
+              : dailyUpdates?.text
+                ? (
+                  <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                    {renderUpdatesText(dailyUpdates.text)}
+                  </ul>
+                )
+                : <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>No updates yet.</span>
+            }
+          </div>
+          {(dailyUpdates?.generated_at || dailyUpdates?.sourceComment) && (
+            <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11, letterSpacing: '0.04em', color: 'var(--text-very-dim)' }}>
+              <span>{fmtGeneratedAt(dailyUpdates.generated_at)}</span>
+              {dailyUpdates.sourceComment && <span style={{ marginLeft: 8, opacity: 0.7 }}>{dailyUpdates.sourceComment}</span>}
+            </div>
+          )}
+        </div>
       </div>
     </section>
   )
@@ -669,15 +673,10 @@ export default function DashboardTop({
   narrativeThread,
   currentFocus,
   contextLastRebuild,
-  contextLoading,
-  weekSummary,
+  summariesLoading,
   dailyUpdates,
-  summaryLoading,
-  updatesLoading,
   hasApiKey,
-  onGenerateSummary,
-  onGenerateUpdates,
-  onRebuildContext,
+  onGenerateSummaries,
   onResolveTask = async () => {},
   onDismissNeedsCall = async (id) => { console.log('dismiss', id) },
   onNeedsCallOrderChange = (items) => { console.log('reorder', items) },
@@ -704,15 +703,10 @@ export default function DashboardTop({
           narrativeThread={narrativeThread}
           currentFocus={currentFocus}
           contextLastRebuild={contextLastRebuild}
-          contextLoading={contextLoading}
-          weekSummary={weekSummary}
           dailyUpdates={dailyUpdates}
-          summaryLoading={summaryLoading}
-          updatesLoading={updatesLoading}
+          summariesLoading={summariesLoading}
           hasApiKey={hasApiKey}
-          onGenerateSummary={onGenerateSummary}
-          onGenerateUpdates={onGenerateUpdates}
-          onRebuildContext={onRebuildContext}
+          onGenerateSummaries={onGenerateSummaries}
         />
       </div>
     ),
@@ -720,7 +714,7 @@ export default function DashboardTop({
 
   return (
     <>
-      <TopBar stats={stats} activityData={activityData} />
+      <TopBar stats={stats} activityData={activityData} contextLastRebuild={contextLastRebuild} />
       {topOrder.map((id) => {
         if (!isVisible(id) || !topSections[id]) return null
         return <div key={id}>{topSections[id]()}</div>
