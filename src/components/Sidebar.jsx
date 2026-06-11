@@ -733,6 +733,8 @@ export default function Sidebar({
   isBusy,
   openTaskCount,
   ideaBacklogCount,
+  openTasksCount,
+  activePlansCount,
   tree,
   onNavigate,
   onOpenFolder,
@@ -865,9 +867,9 @@ export default function Sidebar({
         }}
       >
         <NavItem icon="grid" label="Command center" active={page === 'command'} badge="sync" onClick={() => onNavigate('command')} onBadgeClick={onRefreshDashboard} />
-        <NavItem icon="check" label="Tasks" active={page === 'tasks'} badge={openTaskCount || null} onClick={() => onNavigate('tasks')} />
+        <NavItem icon="check" label="Tasks" active={page === 'tasks'} badge={openTasksCount != null ? (openTasksCount > 99 ? '99+' : openTasksCount || null) : null} onClick={() => onNavigate('tasks')} />
         {(enabledModules.projects || enabledModules.ideas) && (
-          <NavItem icon="layers" label="Plans" active={page === 'plans'} onClick={() => onNavigate('plans')} />
+          <NavItem icon="layers" label="Plans" active={page === 'plans'} badge={activePlansCount > 0 ? activePlansCount : null} onClick={() => onNavigate('plans')} />
         )}
         {enabledModules.ideas && (
           <NavItem icon="idea" label="Ideas backlog" active={page === 'ideas-backlog'} badge={ideaBacklogCount || null} onClick={() => onNavigate('ideas-backlog')} />

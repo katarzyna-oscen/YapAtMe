@@ -3,7 +3,7 @@ import { toSlug } from '../lib/templates'
 import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import DictateBtn from '../components/DictateBtn'
 import TrashMenuButton from '../components/TrashMenuButton'
-import { retargetTasksForFile, appendTaskEntry, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
+import { retargetTasksForFile, appendTaskEntry, appendTaskEntries, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
 import { invalidateFileIndex } from '../lib/fileIndex'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
@@ -692,6 +692,14 @@ export default function IdeaViewer({
     window.dispatchEvent(new Event('memostack:tasks-index-changed'))
   }
 
+  const handlePlanAddMultiple = async (titles) => {
+    await appendTaskEntries(readFile, writeFile, titles.map((title) => ({
+      file: filePath, module: 'ideas', section: '## Current Plan', title, tags: ['action'],
+    })))
+    onTasksChanged?.()
+    window.dispatchEvent(new Event('memostack:tasks-index-changed'))
+  }
+
   const handlePlanRename = async (oldTitle, newTitle, isDone) => {
     await removePlanTask(readFile, writeFile, filePath, '## Current Plan', oldTitle)
     await appendTaskEntry(readFile, writeFile, {
@@ -718,7 +726,7 @@ export default function IdeaViewer({
     onFileDeleted?.()
   }
 
-  const planActive    = ['Validate', 'Decision', 'Pursuing', 'Parked', 'Killed'].includes(status)
+  const planActive    = ['Spark', 'Validate', 'Decision', 'Pursuing', 'Parked', 'Killed'].includes(status)
   const isTerminal     = ['Pursuing', 'Parked', 'Killed'].includes(status)
   const planSteps      = parsePlanSteps(sectionCurrentPlan)
   const openPlanCount  = planSteps.filter((s) => !s.done).length
@@ -888,6 +896,7 @@ export default function IdeaViewer({
                 onToggle={handlePlanToggle}
                 onDelete={handlePlanDelete}
                 onAdd={handlePlanAdd}
+                onAddMultiple={handlePlanAddMultiple}
                 onRename={handlePlanRename}
               />
             ) : (

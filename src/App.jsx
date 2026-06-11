@@ -5,7 +5,7 @@ import { initVault, todayInboxPath, dailyNoteTemplate } from './lib/vaultInit'
 import { generateFile, toSlug } from './lib/templates'
 import { mergeTagsIntoIndex } from './lib/tags'
 import { invalidateFileIndex } from './lib/fileIndex'
-import { restoreTasksForRecreatedPerson, retargetTasksForFile } from './lib/tasksIndex'
+import { restoreTasksForRecreatedPerson, retargetTasksForFile, readTasksIndex } from './lib/tasksIndex'
 import { TASKS_INDEX_CHANGED_EVENT } from './lib/tasksIndex'
 import { clearProcessedState } from './lib/processedNotes'
 import { parseFrontmatter, buildFileContent } from './lib/frontmatter'
@@ -93,6 +93,8 @@ export default function App() {
   const [tasksVersion, setTasksVersion] = useState(0)
   const [newFilePaths, setNewFilePaths] = useState(() => new Set())
   const [ideaBacklogCount, setIdeaBacklogCount] = useState(0)
+  const [openTasksCount, setOpenTasksCount] = useState(null)
+  const [activePlansCount, setActivePlansCount] = useState(null)
 
   // Persist newFilePaths to IndexedDB so chip survives reload
   useEffect(() => {
@@ -249,6 +251,34 @@ export default function App() {
     }
   }, [readFile])
 
+  const refreshCounts = useCallback(async () => {
+    // Open tasks count (non-done, non-archived)
+    try {
+      const entries = await readTasksIndex(readFile)
+      const open = (entries || []).filter((e) => e?.status !== 'done' && e?.status !== 'archived').length
+      setOpenTasksCount(open)
+    } catch {
+      setOpenTasksCount(null)
+    }
+    // Active plans count (entities with type:plan and plan_archived != true)
+    try {
+      const plansTree = await listTree()
+      const projectsDir = (plansTree || []).find((e) => e?.name === 'projects')
+      const projectFiles = (projectsDir?.children || []).filter((f) => f?.name?.endsWith('.md'))
+      let planCount = 0
+      await Promise.all(projectFiles.map(async (f) => {
+        try {
+          const raw = await readFile(`projects/${f.name}`)
+          const { fields } = parseFrontmatter(raw)
+          if (String(fields?.type || '').trim().toLowerCase() === 'plan' && !fields?.plan_archived) planCount++
+        } catch {}
+      }))
+      setActivePlansCount(planCount)
+    } catch {
+      setActivePlansCount(null)
+    }
+  }, [readFile, listTree])
+
   useEffect(() => {
     if (!vaultReady) return
     createTodayNoteIfMissing()
@@ -266,7 +296,8 @@ export default function App() {
       })
       .catch(() => setTree({}))
     refreshBacklogCount()
-  }, [vaultReady, listTree, vaultInitialised, refreshBacklogCount])
+    refreshCounts()
+  }, [vaultReady, listTree, vaultInitialised, refreshBacklogCount, refreshCounts])
 
   const navigate = (page, file = null) => {
     if (file) {
@@ -300,7 +331,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    const handleTasksChanged = () => refreshTasks()
+    const handleTasksChanged = () => { refreshTasks(); refreshCounts() }
     if (typeof window !== 'undefined') {
       window.addEventListener(TASKS_INDEX_CHANGED_EVENT, handleTasksChanged)
     }
@@ -343,6 +374,7 @@ export default function App() {
       })
       .catch(() => {})
     refreshBacklogCount()
+    refreshCounts()
   }
 
   const migrateTasksArchive = async () => {
@@ -604,6 +636,8 @@ export default function App() {
         isBusy={sidebarBusy}
         openTaskCount={null}
         ideaBacklogCount={ideaBacklogCount}
+        openTasksCount={openTasksCount}
+        activePlansCount={activePlansCount}
         tree={tree}
         onNavigate={navigate}
         onOpenFolder={openFolder}
