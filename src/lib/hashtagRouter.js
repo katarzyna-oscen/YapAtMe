@@ -1,4 +1,4 @@
-const HASHTAG_MARKER_MAP = {
+export const HASHTAG_MARKER_MAP = {
   action: { marker: 'action', section: '## Open Actions' },
   decision: { marker: 'decision', section: '## Decisions' },
   delegate: { marker: 'delegate', section: '## Delegate' },

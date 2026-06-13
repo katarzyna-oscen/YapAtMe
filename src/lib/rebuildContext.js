@@ -260,17 +260,19 @@ function humanizeName(filename) {
 }
 
 // Resolve display name: frontmatter title → other frontmatter keys → H1 → truncated slug
+// Any resolved name longer than 60 chars is truncated with …
 function resolveDisplayName(fields, body, filename, ...altKeys) {
+  const cap = (str) => str.length > 60 ? str.slice(0, 59) + '\u2026' : str
+
   const title = String(fields?.title || '').trim()
-  if (title) return title
+  if (title) return cap(title)
   for (const key of altKeys) {
     const val = String(fields?.[key] || '').trim()
-    if (val) return val
+    if (val) return cap(val)
   }
   const h1 = String(body || '').match(/^#\s+(.+)$/m)?.[1]?.trim()
-  if (h1) return h1
-  const humanized = humanizeName(filename)
-  return humanized.length > 60 ? humanized.slice(0, 59) + '\u2026' : humanized
+  if (h1) return cap(h1)
+  return cap(humanizeName(filename))
 }
 
 export async function rebuildIndexFiles(readFile, writeFile, listTree) {

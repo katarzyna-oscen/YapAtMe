@@ -1,4 +1,9 @@
+import { HASHTAG_MARKER_MAP } from './hashtagRouter'
+
 const TAGS_PATH = 'context/tags.md'
+
+// Routing tags are always present so autocomplete shows them even on a fresh/wiped tags.md.
+const BASELINE_TAGS = Object.keys(HASHTAG_MARKER_MAP)
 
 export function normalizeTag(raw) {
   const cleaned = String(raw || '')
@@ -61,7 +66,7 @@ export async function mergeTagsIntoIndex(readFile, writeFile, incomingTags = [])
     existing = parseTagsFromContent(raw)
   } catch {}
 
-  const merged = [...new Set([...existing, ...incomingTags.map(normalizeTag).filter(Boolean)])]
+  const merged = [...new Set([...BASELINE_TAGS, ...existing, ...incomingTags.map(normalizeTag).filter(Boolean)])]
   await writeFile(TAGS_PATH, buildTagsFile(merged))
 
   return merged
