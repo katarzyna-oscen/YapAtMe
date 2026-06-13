@@ -10,6 +10,8 @@ import { TASKS_INDEX_CHANGED_EVENT } from './lib/tasksIndex'
 import { clearProcessedState } from './lib/processedNotes'
 import { parseFrontmatter, buildFileContent } from './lib/frontmatter'
 import { dbGet, dbPut } from './lib/db'
+import OnboardingFlow from './core/OnboardingFlow'
+import FirstRunPopup from './core/FirstRunPopup'
 import Sidebar from './components/Sidebar'
 import ConfirmDialog from './components/ConfirmDialog'
 import WikilinkCreatePopover from './components/WikilinkCreatePopover'
@@ -95,6 +97,10 @@ export default function App() {
   const [ideaBacklogCount, setIdeaBacklogCount] = useState(0)
   const [openTasksCount, setOpenTasksCount] = useState(null)
   const [activePlansCount, setActivePlansCount] = useState(null)
+
+  // Onboarding gate: null = checking, true = needed, false = done
+  const [onboardingNeeded, setOnboardingNeeded] = useState(null)
+  const [showFirstRun, setShowFirstRun] = useState(false)
 
   // Persist newFilePaths to IndexedDB so chip survives reload
   useEffect(() => {
@@ -203,6 +209,108 @@ export default function App() {
     setConfirmDialog((state) => ({ ...state, open: false, onConfirm: null }))
   }
 
+  // Determine whether to show onboarding on first mount
+  useEffect(() => {
+    const check = async () => {
+      // Existing user: stored vault handle → skip onboarding
+      try {
+        const handle = await dbGet('handles', 'rootDir')
+        if (handle) { setOnboardingNeeded(false); return }
+      } catch {}
+      // Check if onboarding was previously completed
+      const done = await dbGet('settings', 'onboardingComplete').catch(() => false)
+      setOnboardingNeeded(!done)
+    }
+    check()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show first-run popup once after new-user onboarding
+  useEffect(() => {
+    if (!vaultReady || onboardingNeeded !== false) return
+    dbGet('settings', 'showFirstRunPopup').then(v => {
+      if (v) setShowFirstRun(true)
+    }).catch(() => {})
+  }, [vaultReady, onboardingNeeded])
+
+  // Handle onboarding completion: write vault files, save settings, mark done
+  const handleOnboardingComplete = useCallback(async (data) => {
+    const today = new Date().toISOString().slice(0, 10)
+    const ownerSlug = toSlug(data.name)
+    const ownerPath = `people/${ownerSlug}.md`
+
+    // Create vault owner person file
+    if (data.name.trim()) {
+      await writeFile(ownerPath, buildFileContent({
+        type: 'person',
+        full_name: data.name.trim(),
+        relationship: 'Me',
+        status: 'Active',
+        last_updated: today,
+      }, '## Summary\n_This is you._\n\n## Delegate\n\n## Talk About\n\n## Recent Mentions\n')).catch(() => {})
+    }
+
+    // Seed people + projects (Path A only, if not skipped)
+    if (data.path === 'new' && data.seeded) {
+      for (const person of data.seedPeople) {
+        if (!person.name.trim()) continue
+        const slug = toSlug(person.name)
+        await writeFile(`people/${slug}.md`, buildFileContent({
+          type: 'person',
+          full_name: person.name.trim(),
+          role: person.role || '',
+          status: 'Active',
+          last_updated: today,
+          demo: true,
+        }, '## Delegate\n\n## Talk About\n\n## Recent Mentions\n')).catch(() => {})
+      }
+      for (const project of data.seedProjects) {
+        if (!project.name.trim()) continue
+        const slug = toSlug(project.name)
+        await writeFile(`projects/${slug}.md`, buildFileContent({
+          type: 'project',
+          name: project.name.trim(),
+          status: 'Untriaged',
+          last_updated: today,
+          demo: true,
+        }, '## Open Actions\n\n## Decisions\n\n## Recent Mentions\n')).catch(() => {})
+      }
+    }
+
+    // Demo note (Path A only)
+    if (data.path === 'new') {
+      const dd = String(new Date().getDate()).padStart(2, '0')
+      const mm = String(new Date().getMonth() + 1).padStart(2, '0')
+      const yyyy = new Date().getFullYear()
+      const demoPath = `inbox/${dd}-${mm}-${yyyy}.md`
+      const demoContent = `Met with [[Alex Chen]] today to discuss the [[Website Redesign]] project. We need to finalise the colour palette by end of week — I\'ll send her the options tomorrow.\n\nAlso had a thought: what if we built a browser extension that lets you capture highlights directly into the vault? Could be huge for research workflows. #idea\n\n#action Review colour palette options\n`
+      await writeFile(demoPath, demoContent).catch(() => {})
+    }
+
+    // Write vault marker
+    await writeFile('context/.memostack', JSON.stringify({ created: new Date().toISOString() })).catch(() => {})
+
+    // Save settings
+    await saveSettings({
+      ...settings,
+      provider: data.provider,
+      apiKey: data.apiKey,
+      model: '',
+      enabledModules: data.modules,
+      ...(data.name.trim() ? { writerFile: ownerPath } : {}),
+    }).catch(() => {})
+
+    // Mark onboarding complete
+    await dbPut('settings', 'onboardingComplete', true).catch(() => {})
+
+    // Queue first-run popup for Path A
+    if (data.path === 'new') {
+      await dbPut('settings', 'showFirstRunPopup', true).catch(() => {})
+    }
+
+    setOnboardingNeeded(false)
+    setActivePage('inbox')
+  }, [writeFile, saveSettings, settings])
+
   useEffect(() => {
     if (!vaultReady || vaultInitialised) return
     initVault(writeFile, fileExists)
@@ -267,7 +375,7 @@ export default function App() {
   }, [readFile])
 
   useEffect(() => {
-    if (!vaultReady) return
+    if (!vaultReady || onboardingNeeded === true) return
     createTodayNoteIfMissing()
     migrateTasksArchive()
 
@@ -628,6 +736,22 @@ export default function App() {
     }
   }
 
+  if (onboardingNeeded === null) {
+    // Still checking IndexedDB — render nothing to avoid flash
+    return null
+  }
+
+  if (onboardingNeeded === true) {
+    return (
+      <OnboardingFlow
+        openFolder={openFolder}
+        fileExists={fileExists}
+        listTree={listTree}
+        onComplete={handleOnboardingComplete}
+      />
+    )
+  }
+
   if (!vaultReady) {
     return (
       <VaultPicker
@@ -938,6 +1062,14 @@ export default function App() {
           enabledModules={settings.enabledModules}
           onSelect={handleCreateFromWikilink}
           onClose={() => setWikiCreatePopover({ open: false, name: '', x: 0, y: 0 })}
+        />
+      )}
+      {showFirstRun && (
+        <FirstRunPopup
+          onDismiss={() => {
+            setShowFirstRun(false)
+            dbPut('settings', 'showFirstRunPopup', false).catch(() => {})
+          }}
         />
       )}
     </div>
