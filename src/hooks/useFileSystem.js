@@ -180,7 +180,7 @@ export function useFileSystem() {
       return handle
     } catch (err) {
       if (isUserAgentPermissionError(err)) {
-        setPickerError('Folder permission was blocked by the browser context. Open Yapper in a single localhost tab and choose the folder manually.')
+        setPickerError('Folder permission was blocked by the browser context. Open YapAtMe in a single localhost tab and choose the folder manually.')
         setNeedsReconnect(false)
         return null
       }

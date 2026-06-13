@@ -842,7 +842,7 @@ export default function Sidebar({
               marginBottom: 2,
             }}
           >
-            Yapper
+            YapAtMe
           </div>
           <div
             style={{

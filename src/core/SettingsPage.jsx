@@ -634,7 +634,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
               </h1>
 
               <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, color: 'var(--text-dim)', maxWidth: 640 }}>
-                Tell Yapper who you are so it can route first-person actions to your file and personalise note processing.
+                Tell YapAtMe who you are so it can route first-person actions to your file and personalise note processing.
               </p>
 
               {form.writerFile ? (
@@ -695,7 +695,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                     color: 'var(--text-dim)',
                     lineHeight: 1.5,
                   }}>
-                    Set your name so Yapper knows who you are
+                    Set your name so YapAtMe knows who you are
                   </div>
                   <div className="space-y-2">
                     <FieldLabel>Select your person file</FieldLabel>
@@ -731,7 +731,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
               </h1>
 
               <p style={{ margin: '0 0 28px', fontSize: 14, lineHeight: 1.55, color: 'var(--text-dim)', maxWidth: 640, textWrap: 'pretty' }}>
-                Choose the model provider and credentials Yapper uses to process inbox notes, generate summaries, and route tasks.
+                Choose the model provider and credentials YapAtMe uses to process inbox notes, generate summaries, and route tasks.
               </p>
 
               <div className="space-y-2">
