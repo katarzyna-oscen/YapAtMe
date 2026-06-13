@@ -31,7 +31,7 @@ const VAULT_SEEDS = [
   ['context/projects-index.md',   '# Projects Index\n*Last updated: —*\n\n_Will be populated automatically after processing your first note._\n'],
   ['context/people-index.md',     '# People Index\n*Last updated: —*\n\n_Will be populated automatically after processing your first note._\n'],
   ['context/ideas-index.md',      '# Ideas Index\n*Last updated: —*\n\n_Will be populated automatically after processing your first note._\n'],
-  ['ideas/backlog.md',            '# Ideas Backlog\n\n'],
+  ['ideas/backlog.md',            '# Ideas Backlog\n\n## Backlog\n'],
   ['context/tags.md',
 `# Tags
 > One tag per line. Used for autocomplete in the editor and routing by AI.
@@ -180,7 +180,7 @@ export function useFileSystem() {
       return handle
     } catch (err) {
       if (isUserAgentPermissionError(err)) {
-        setPickerError('Folder permission was blocked by the browser context. Open MemoStack in a single localhost tab and choose the folder manually.')
+        setPickerError('Folder permission was blocked by the browser context. Open Yapper in a single localhost tab and choose the folder manually.')
         setNeedsReconnect(false)
         return null
       }

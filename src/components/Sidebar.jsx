@@ -842,7 +842,7 @@ export default function Sidebar({
               marginBottom: 2,
             }}
           >
-            Memory OS
+            Yapper
           </div>
           <div
             style={{
