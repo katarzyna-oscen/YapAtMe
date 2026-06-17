@@ -64,6 +64,32 @@ export async function appendTaskEntry(readFile, writeFile, entry) {
   await writeTasksIndex(writeFile, [...existing, newEntry])
 }
 
+// Batch version of appendTaskEntry — single read/write for multiple steps.
+// Deduplicates by file + section + title (plan steps have no sourceNote).
+export async function appendTaskEntries(readFile, writeFile, entries) {
+  if (!Array.isArray(entries) || !entries.length) return
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().split('T')[0]
+  const toAdd = entries
+    .filter((entry) => {
+      const t = String(entry?.title || '').trim().toLowerCase()
+      const f = String(entry?.file || '').trim().toLowerCase()
+      const s = entry?.section || ''
+      return t && !existing.some((e) =>
+        String(e?.title || '').trim().toLowerCase() === t &&
+        String(e?.file || '').trim().toLowerCase() === f &&
+        e?.section === s
+      )
+    })
+    .map((entry) => ({
+      ...entry,
+      id: entry.id ?? crypto.randomUUID(),
+      status: 'open',
+      last_updated: today,
+    }))
+  if (toAdd.length) await writeTasksIndex(writeFile, [...existing, ...toAdd])
+}
+
 export async function resolveTaskEntry(readFile, writeFile, entryId) {
   const existing = await readTasksIndex(readFile)
   const today = new Date().toISOString().slice(0, 10)

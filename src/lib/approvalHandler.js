@@ -126,7 +126,13 @@ export async function applyChange(readFile, writeFile, change, noteFilename, opt
 
   const isTaskSection = TASK_SECTIONS.has(change.target_section)
   const isTask = isTaskSection || isTaskChange(change)
-  const isMention = change.target_section === '## Recent Mentions'
+  // A mention is identified by section OR marker — if marker says mention but
+  // the LLM routed to the wrong section, force it to Recent Mentions.
+  const markerIsMention = String(change?.marker || '').toLowerCase() === 'mention'
+  const isMention = change.target_section === '## Recent Mentions' || markerIsMention
+  if (markerIsMention && change.target_section !== '## Recent Mentions') {
+    change = { ...change, target_section: '## Recent Mentions' }
+  }
 
   if (isMention) {
     const formattedMention = formatMentionLine(change.content, noteFilename || change.noteFilename)

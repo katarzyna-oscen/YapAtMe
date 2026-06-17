@@ -467,6 +467,15 @@ function EditorCore({ initialValue, onChange, onWikilinkClick, tagSuggestions = 
   }, [])
 
   // Keep decoration plugin's known-set in sync whenever suggestions change,
+  // Reset wikilink menu state when suggestions change (vault switch, etc.)
+  useEffect(() => {
+    // Aggressively clear module-level refs when vault/suggestions change
+    _knownWikilinksRef.current = new Set()
+    _knownWikilinksReadyRef.current = false
+    setWikilinkMenu({ open: false, query: '', x: 0, y: 0, index: 0 })
+  }, [wikilinkSuggestions])
+
+  // Update known wikilinks set for color coding and filtering
   // then dispatch a no-op transaction so ProseMirror re-runs buildTokenDecorations
   // immediately (otherwise colors only update on the next user interaction).
   useEffect(() => {

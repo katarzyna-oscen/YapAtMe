@@ -598,6 +598,88 @@ All settings section containers widened from `maxWidth: 520` → `maxWidth: 640`
 
 ---
 
+## Session update — 2026-06-15
+
+### Routing pipeline hardening — unassigned tasks, decision marker, vault owner locking
+
+---
+
+### Unassigned tasks now route to vault owner's `## My Actions`
+
+**Problem:** First-person tasks ("I need to...", "I will...") and any task the LLM left without a `target_file` were accumulating as unattached items in the task index — not appearing in any entity's view.
+
+**Previous approach:** A fragile first-person regex test after LLM processing attempted to redirect matching tasks. Missed non-first-person tasks with no owner; regex produced false negatives.
+
+**Fix (`src/hooks/useNoteProcessor.js`):**
+- Replaced the first-person regex map with a `flatMap` that catches any task-marker change where `target_file` is null/empty and `writerFile` is set, and routes it to `writerFile → ## My Actions`.
+- Prompt updated: LLM explicitly told to output `target_file: null, module: "unattached"` for all unowned tasks (first-person or otherwise), with a note that they will be automatically assigned to the vault owner.
+
+**Fix (`src/core/InboxPage.jsx`):**
+- Added `resolvedWriterFile` lookup before calling `process()`: if `settings.writerFile` is empty, scans `people/*.md` frontmatter for `relationship: Me` and uses that path as the effective writer file.
+- `effectiveSettings` (with resolved `writerFile`) is passed to `process()` instead of raw `settings`.
+
+---
+
+### Decision marker misrouting on people files — suppressed
+
+**Problem:** The LLM occasionally emitted `decision` marker changes targeting `people/` files (e.g. "Diana's decision on Canonical Slides" → `people/diana.md · ## Decisions`). People files have no `## Decisions` section, so the entry was invalid. It also surfaced in the review queue as a confusing mention-like card.
+
+**Root cause distinction clarified:**
+- `decision` = open question where NO named vault person is the decision-maker.
+- `follow-up` = writer needs input/approval from a named person.
+
+**Fix — three suppression layers:**
+
+1. **`mentionChanges` filter (`useNoteProcessor.js`):** `decision` items targeting `people/` files are dropped from the mention pass output.
+2. **`taskChanges` flatMap (`useNoteProcessor.js`):** `decision` items targeting `people/` files return `[]` — removed from the task changes array entirely.
+3. **InboxPage review queue filter (`src/core/InboxPage.jsx`):** An explicit guard strips any remaining `decision`-on-people entries before they reach the review modal.
+
+**Prompt update (`useNoteProcessor.js`):**
+- Marker definitions sharpened: `follow-up` now explicitly covers getting input or approval from a named person.
+- `decision` definition restricted to cases with no named vault person as decision-maker.
+- Added: `NEVER emit a decision change targeting a people/ file.`
+
+---
+
+### Settings — vault owner identity made read-only
+
+**Problem:** The "You" section in Settings allowed changing `writerFile` via a dropdown. This could silently break routing if changed to the wrong person.
+
+**Fix (`src/core/SettingsPage.jsx`):**
+- Entire `writerFile` dropdown UI removed. The "You" section now only displays who the vault owner is (avatar initial + name + file path), with a note that identity is set during onboarding.
+- Removed: `peopleWriterOptions` state, the `useEffect` that loaded people file options, and the `ensureWriterSectionIfNeeded` helper.
+- Removed: unused `ensureWriterActionsSection` import from `templates.js`.
+
+---
+
+### Vault owner file locked against archive/delete
+
+**Problem:** The vault owner's person file could be archived or deleted from the sidebar kebab menu or from within the PersonViewer header — which would break routing.
+
+**Fix — two locations:**
+
+**`src/core/PersonViewer.jsx`:**
+- `TrashMenuButton` is conditionally rendered: hidden when `filePath === settings?.writerFile`.
+
+**`src/components/Sidebar.jsx`:**
+- `SidebarSection` now accepts a `lockedPath` prop.
+- Archive and Delete menu items are wrapped in `selectedFile.path !== lockedPath` guards — they simply don't render for the locked file.
+- The People `SidebarSection` is called with `lockedPath={settings?.writerFile}`.
+
+---
+
+### Files changed in this session
+
+| File | Change |
+|------|--------|
+| `src/hooks/useNoteProcessor.js` | Unassigned task routing: first-person regex removed, replaced with `flatMap` fallback to `writerFile`; `mentionChanges` filter suppresses decision-on-people; `taskChanges` flatMap suppresses decision-on-people; prompt marker definitions sharpened; decision routing and follow-up distinction rules added |
+| `src/core/InboxPage.jsx` | `resolvedWriterFile` lookup (scans `relationship: Me`); `effectiveSettings` passed to `process()`; review queue filter suppresses decision-on-people; `parseFrontmatter` import used for owner lookup |
+| `src/core/SettingsPage.jsx` | "You" section replaced with read-only display; `peopleWriterOptions` state/effect/helper removed; `ensureWriterActionsSection` import removed |
+| `src/core/PersonViewer.jsx` | `TrashMenuButton` hidden for vault owner file |
+| `src/components/Sidebar.jsx` | `SidebarSection` accepts `lockedPath`; Archive/Delete hidden for locked file; People section receives `lockedPath={settings?.writerFile}` |
+
+---
+
 ## Session update — 2026-06-09
 
 ### Sidebar rename (all entity types)
@@ -925,4 +1007,124 @@ When all steps in a plan block are checked, an **Archive** button appears in the
 | `src/core/ProcessedNoteViewer.jsx` | Title decoupled from filename for date notes; `executeRename`/`cancelRename`/`renameDialog` removed; `onDisplayNameChanged` wired |
 | `src/components/MarkdownEditor.jsx` | `autoLinkPlugin` (appendTransaction URL auto-linker); Cmd+K popover; link click handler; `linkPastePlugin` and DOM paste listeners removed in favour of autolink |
 | `src/index.css` | Link styling: `.milkdown-wrapper .milkdown .ProseMirror a[href]` |
+
+---
+
+## Session update — 2026-06-16
+
+### Entity detection hardening — dictated (lowercase, Unicode) text
+
+**Context:** Real-world notes are dictated and rarely capitalise mid-sentence words. The previous entity detection relied on capital letters, which made it miss dictated person names and project phrases entirely.
+
+---
+
+#### Person detection — Unicode support
+
+**Problem:** People with non-ASCII names (e.g. `Paweł`, `ł = U+0142`) were not matched by the name-context regex because the character class only covered ASCII word characters.
+
+**Fix (`src/hooks/useNoteProcessor.js` — `extractEntityCandidates`):**
+- `NAME_CONTEXT_RE` and `POSSESSIVE_RE` updated to use `\u00C0-\u017E` in character classes and the `u` flag: `/\b(?:with|and|...)\s+([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})/gu`.
+
+---
+
+#### Person detection — conjunction lists
+
+**Problem:** `NAME_CONTEXT_RE` only captures the word *after* a trigger verb. In `"survey that Paweł and Alorah compiled"`, `"and"` is the trigger — so `Alorah` is captured but `Paweł` (before `and`) is missed entirely.
+
+**Fix (`src/hooks/useNoteProcessor.js` — `extractEntityCandidates`, step 2b):**
+- Added `CONJ_RE = /\b([A-Z][\w\u00C0-\u017E]+)\s*(?:,|and|&)\s*([A-Z][\w\u00C0-\u017E]+)\b/gu` that captures **both** sides of a conjunction pair.
+- Both `match[1]` and `match[2]` are processed through the same `STOP_WORDS` guard and `buckets` deduplication map.
+
+---
+
+#### Project detection — anchored on literal "project" word only
+
+**Problem (before this session):** Project detection used a greedy backward regex anchored on any project noun (`design`, `survey`, `research`, `ops`, etc.). This produced false positives: `"Late To The AI Design"`, `"Preliminary Results From The Survey"`, `"Started To Create The Template"` were all surfaced as unknown projects.
+
+**Fix (`src/hooks/useNoteProcessor.js` — project detection block ~line 650):**
+- Completely rewrote to a forward/backward **word-walk** strategy anchored **only** on the literal token `"project"`.
+- `PROJ_STOP` set of ~40 stop-words terminates the backward walk.
+- `collectBackward(anchorIdx, maxWords=4)` walks left from the `"project"` token, collecting up to 4 non-stop words.
+- `pushProject(words)` title-cases the collected tokens and deduplicates against known paths.
+- `"AI design ops project"` → backward walk collects `ops`, `design`, `AI`, stops at `the` → project name `"Ai Design Ops"` ✓.
+- `"within this project"` → `this` is a stop-word → empty → no project created ✓.
+- `"[[Canonical slides]] project"` → `]]` is a break marker → empty → no project created ✓.
+- Project-noun anchor loop removed entirely — was the source of all false positives.
+
+**`_PROJECT_NOUNS` set** — removed the noisy generic nouns added in an earlier attempt (`process`, `program`, `campaign`, `product`, `design`, `research`, `survey`, `study`). `_PROJECT_NOUNS` is now only consulted by `classifyUnknownEntityType`, not for detection anchoring.
+
+---
+
+### Project viewer — Owner field upgraded to people picker
+
+**Problem:** The Owner field in `ProjectViewer` was a free-text `PillInput`. There was no way to select an existing person entity.
+
+**Fix (`src/core/ProjectViewer.jsx`):**
+- Replaced the `PillInput` for owner with a new `OwnerPicker` combobox component (defined in the same file).
+- `ownerPeople` is derived from `wikilinkSuggestions` filtered to `type === 'person'`.
+- `OwnerPicker` behaviour:
+  - Collapsed: shows `+ Owner` dashed pill if empty.
+  - On click/focus: opens a typeahead `<input>` with a floating dropdown list of all person entities.
+  - Typing filters the list by substring match.
+  - Clicking a person sets them as owner.
+  - For a non-entity owner (free text): typing a name not in the list shows a `+ Add "name"` option; pressing Enter also accepts the typed value directly.
+  - Closes on outside click or Escape.
+  - Dropdown is position-`absolute`, `zIndex: 50`, max-height 220 px with scroll.
+
+---
+
+### PersonViewer — Related Projects YAML round-trip bug fixed
+
+**Problem:** Related projects were stored in frontmatter as raw `[[Name]]` strings, e.g.:
+```yaml
+related_projects: [[Ai Design Ops]]
+```
+The frontmatter parser treated the leading `[` and trailing `]` as YAML inline-array delimiters, stripped one bracket from each end, and on reload the chip label became `[Ai Design Ops` (one bracket remaining).
+
+**Fix (`src/core/PersonViewer.jsx`):**
+- **Save path:** `related_projects` is now saved as a clean **array of bare names** (no `[[` `]]`). The YAML serializer writes `related_projects: [Ai Design Ops]` which round-trips correctly as a single-element array.
+- **Load path:** when reading the `rawRel` array, each element has any stray brackets stripped before re-wrapping: `.replace(/^\[+|\]+$/g, '').trim()`. Existing corrupted files self-heal on the first save.
+
+---
+
+### Files changed in this session (2026-06-16)
+
+| File | Change |
+|------|--------|
+| `src/hooks/useNoteProcessor.js` | Unicode char class in `NAME_CONTEXT_RE` + `POSSESSIVE_RE`; new `CONJ_RE` conjunction-list detection (step 2b); project detection rewritten to word-walk anchored on literal `"project"` only; project-noun anchor loop removed; noisy generic nouns removed from `_PROJECT_NOUNS` |
+| `src/core/ProjectViewer.jsx` | `PillInput` for owner replaced with `OwnerPicker` combobox; `ownerPeople` derived from `wikilinkSuggestions`; `OwnerPicker` component added (people dropdown + free-text fallback) |
+| `src/core/PersonViewer.jsx` | Related projects saved as bare-name array; load-path strips stray brackets before re-wrapping |
+
+---
+
+## Session update — 2026-06-17
+
+### Vault switch — wikilink dropdown cache invalidation
+
+**Problem:** After switching vaults, the sidebar displayed correct entities from the new vault, but the wikilink autocomplete dropdown (`[[` trigger) in the Inbox editor still showed stale entities from the previous vault.
+
+**Root cause investigation:**
+- The sidebar state updates correctly when vault changes because it reads from `src/App.jsx`'s `tree` state, which is reset on vault switch.
+- The Inbox editor's wikilink suggestions are **separate** — they come from `src/core/InboxPage.jsx`, which computes its own `wikilinkSuggestions` useMemo based on `allowedFiles`.
+- `allowedFiles` is loaded via `getFileIndex(listTree, buildAllowedFiles)` from `src/lib/fileIndex.js`.
+- `getFileIndex` uses a **module-level global IndexedDB cache** (`memostack:fileIndex`) that is **not vault-scoped**.
+- On vault switch, the cache was never cleared, so InboxPage read stale cached file lists.
+
+**Fix (`src/App.jsx` — `handleChangeVaultFolder`):**
+- Added `await invalidateFileIndex()` call immediately after `openFolderWithHandle(handle)` and before state resets.
+- `invalidateFileIndex()` sets the IndexedDB key to `null`, clearing the cache.
+- When `rootHandle` updates → `listTree` reference changes → InboxPage's effect re-runs with `[listTree, filePath]` dependency → calls `getFileIndex` again → cache is empty → fresh file list loaded from new vault → wikilink dropdown now shows correct entities.
+
+**Secondary fix (`src/components/MarkdownEditor.jsx` — `EditorCore` component):**
+- Added explicit clearing of module-level refs `_knownWikilinksRef.current = new Set()` and `_knownWikilinksReadyRef.current = false` in the effect that watches `wikilinkSuggestions` change.
+- Ensures ProseMirror's token decoration plugin has fresh data when suggestions change.
+
+**Key insight:** Multi-page components (InboxPage, ProjectViewer, PersonViewer) compute their own `wikilinkSuggestions` from different sources and at different times. Always ensure **all** related caches are invalidated on vault switch, not just the sidebar's `tree` state.
+
+### Files changed in this session (2026-06-17)
+
+| File | Change |
+|------|--------|
+| `src/App.jsx` | `handleChangeVaultFolder`: added `await invalidateFileIndex()` call to clear global IndexedDB cache when switching vaults; added `setEntityDisplayNames(new Map())` and `setTree({})` to clear sidebar cache |
+| `src/components/MarkdownEditor.jsx` | Added reset of `_knownWikilinksRef.current` and `_knownWikilinksReadyRef.current` in effect watching `wikilinkSuggestions` to ensure stale module-level refs don't linger |
 

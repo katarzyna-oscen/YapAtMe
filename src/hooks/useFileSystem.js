@@ -205,6 +205,25 @@ export function useFileSystem() {
     }
   }, [rootHandle])
 
+  // Store handle in state + DB without calling initVault.
+  // Used when onboarding will handle vault initialisation.
+  const connectHandle = useCallback(async (handle) => {
+    await dbPut('handles', HANDLE_KEY, handle)
+    setRootHandle(handle)
+    setFolderName(handle.name)
+    setNeedsReconnect(false)
+  }, [])
+
+  // Accept an already-picked handle and fully connect (incl. initVault).
+  const openFolderWithHandle = useCallback(async (handle) => {
+    await dbPut('handles', HANDLE_KEY, handle)
+    await initVault(handle)
+    setRootHandle(handle)
+    setFolderName(handle.name)
+    setNeedsReconnect(false)
+    setVaultReady(true)
+  }, [])
+
   const reconnect = useCallback(async () => {
     const handle = await dbGet('handles', HANDLE_KEY)
     if (!handle) return null
@@ -428,6 +447,8 @@ export function useFileSystem() {
     vaultReady,
     pickerError,
     openFolder,
+    connectHandle,
+    openFolderWithHandle,
     reconnect,
     initVaultNow,
     readFile,

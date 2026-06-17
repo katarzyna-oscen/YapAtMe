@@ -189,7 +189,7 @@ function SidebarTaskActionModal({ open, mode, label, onCancel, onSelect }) {
   )
 }
 
-function SidebarSection({ title, folder, files, defaultOpen = true, addable = false, activePath, onFileClick, onAdd, onArchiveFile, onDeleteFile, onConfirmAction, readFile, writeFile, newFilePaths = new Set(), onMarkFileSeen, onRenameFile }) {
+function SidebarSection({ title, folder, files, defaultOpen = true, addable = false, activePath, onFileClick, onAdd, onArchiveFile, onDeleteFile, onConfirmAction, readFile, writeFile, newFilePaths = new Set(), onMarkFileSeen, onRenameFile, lockedPath }) {
   const [open, setOpen] = useState(defaultOpen)
   const [menuState, setMenuState] = useState(null)
   const [hoverPath, setHoverPath] = useState(null)
@@ -622,17 +622,19 @@ function SidebarSection({ title, folder, files, defaultOpen = true, addable = fa
               }}
             />
           )}
-          {folder !== 'archive' && (
+          {folder !== 'archive' && selectedFile.path !== lockedPath && (
             <MenuItem
               label="Archive"
               onClick={() => handleArchive(selectedFile.path)}
             />
           )}
+          {selectedFile.path !== lockedPath && (
           <MenuItem
             label="Delete"
             danger
             onClick={() => handleDelete(selectedFile.path)}
           />
+          )}
         </div>
       )}
 
@@ -917,6 +919,7 @@ export default function Sidebar({
             newFilePaths={newFilePaths}
             onMarkFileSeen={onMarkFileSeen}
             onRenameFile={onRenameFile}
+            lockedPath={settings?.writerFile}
           />
         )}
         {enabledModules.ideas && (

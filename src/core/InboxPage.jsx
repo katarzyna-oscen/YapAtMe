@@ -258,6 +258,8 @@ function tagsForChange(change) {
   const tags = []
   if (marker) tags.push(marker)
 
+  // Entity slug intentionally NOT added — wikilinks already serve as connectors.
+
   const text = `${change?.title || ''} ${change?.content || ''}`.toLowerCase()
   if (/\b(urgent|asap|immediately|critical|blocker)\b/.test(text)) {
     tags.push('urgent')
@@ -771,10 +773,30 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
     // Skip splitMergedDateHeading if content already has a correct # DD-MM-YYYY\n\n heading
     const alreadyNormalizedHeading = /^#\s+\d{2}-\d{2}-\d{4}\n\n/.test(noteForLLMRaw)
     const noteForLLM = alreadyNormalizedHeading ? noteForLLMRaw : normalizeInboxMarkdown(splitMergedDateHeading(noteForLLMRaw))
+
+    // Resolve writerFile: use settings value, or fall back to any people/*.md with relationship: Me
+    let resolvedWriterFile = settings?.writerFile || ''
+    if (!resolvedWriterFile && settings?.enabledModules?.people !== false) {
+      const peoplePaths = allowedFiles.filter(p => p.startsWith('people/') && p.endsWith('.md'))
+      for (const p of peoplePaths) {
+        try {
+          const raw = await readFile(p)
+          const { fields } = parseFrontmatter(raw)
+          if (String(fields?.relationship || '').trim().toLowerCase() === 'me') {
+            resolvedWriterFile = p
+            break
+          }
+        } catch {}
+      }
+    }
+    const effectiveSettings = resolvedWriterFile !== (settings?.writerFile || '')
+      ? { ...settings, writerFile: resolvedWriterFile }
+      : settings
+
     const moduleRoutingOptions = {
       peopleModuleEnabled: settings?.enabledModules?.people !== false,
       ideasModuleEnabled: settings?.enabledModules?.ideas !== false,
-      writerFile: settings?.writerFile || '',
+      writerFile: resolvedWriterFile,
     }
     const enabledFolders = ['projects', 'people', 'ideas'].filter((folder) => settings?.enabledModules?.[folder] !== false)
     const scopedAllowedFiles = (allowedFiles || []).filter((path) => enabledFolders.includes(String(path || '').split('/')[0]))
@@ -797,7 +819,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
         noteFilename: filePath,
         contextContent,
         allowedFiles,
-        settings,
+        settings: effectiveSettings,
         enabledModules: settings?.enabledModules || {},
         preResolvedUnknownEntities: [],
         suppressedUnknownEntities: [],
@@ -810,6 +832,8 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
 
       const isTaskLikeChange = (change) => {
         const marker = String(change?.marker || '').toLowerCase()
+        // mention marker is always a mention — never treat it as a task regardless of content
+        if (marker === 'mention') return false
         const content = String(change?.content || '')
         const text = `${change?.title || ''} ${content}`.toLowerCase()
         if (/^-\s*\[[ x]\]/i.test(content)) return true
@@ -846,6 +870,8 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
             if (change?.fromHashtag) return false
             const marker = String(change?.marker || '').toLowerCase()
             const section = String(change?.target_section || '').toLowerCase()
+            // Decisions on people files are invalid — suppress from review queue
+            if (marker === 'decision' && String(change?.target_file || '').startsWith('people/')) return false
             if (isTaskLikeChange(change)) return true
             return !(marker === 'mention' || section.includes('recent mentions'))
           }),

@@ -54,11 +54,17 @@ core_problem:
 last_updated: ${today}
 ---
 
-## Summary
-_What is this project and why does it matter?_
-
 ## Current Plan
 _What's the current approach and the immediate next step?_
+
+
+## Open Actions
+
+
+## Delegations
+
+
+## Decisions
 
 
 ## Recent Mentions
@@ -83,11 +89,16 @@ role: ${role}
 last_updated: ${today}
 ---
 
-## Summary
-_Who is this person and why do they matter to you?_
-
 ## Related Projects
-_Link projects this person is involved in._
+
+
+## Talk About
+
+
+## Delegate
+
+
+## My Actions
 
 
 ## Recent Mentions

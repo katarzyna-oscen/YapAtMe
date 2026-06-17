@@ -565,7 +565,7 @@ ${item.source ? `Spotted in note [[${item.source}]].` : 'From ideas backlog.'}
         ) : (
           <div style={{
             background: 'var(--panel)', border: '1px solid var(--border)',
-            borderRadius: 10, overflow: 'hidden',
+            borderRadius: 10,
           }}>
             {items.map((item, i) => (
               <BacklogRow

@@ -10,24 +10,13 @@ const IdeasModule = {
     'idea', 'spark', 'exploring', 'validating', 'building', 'parked', 'killed',
     'idea_AI', 'idea_process', 'idea_design', 'idea_project', 'idea_ops', 'idea_personal',
   ],
-  templateFn: () => `---
-type: idea
-domain:
-status: Spark
-origin: ${new Date().toISOString().split('T')[0]}
-related_projects: []
-related_people: []
-tags: []
-last_updated: ${new Date().toISOString().split('T')[0]}
----
-## Summary
-## Problem It Solves
-## Next Step
-## Notes
-`,
+  templateFn: () => {
+    const today = new Date().toISOString().split('T')[0]
+    return `---\ntype: idea\nname: \ndomain: \nstatus: Spark\norigin: ${today}\nrelated_projects: []\nrelated_people: []\ntags: []\nlast_updated: ${today}\n---\n\n## Summary\n_One sentence describing this idea and why it matters._\n\n## Origin\n_Why did this idea come up?_\n\n## Developing\n\n\n## Outcome\n\n\n## Current Plan\n\n\n## Recent Mentions\n`
+  },
   matchRules: [
-    { marker: 'idea',    targetSection: '## Notes' },
-    { marker: 'mention', targetSection: '## Notes' },
+    { marker: 'idea',    targetSection: '## Developing' },
+    { marker: 'mention', targetSection: '## Recent Mentions' },
   ],
   dashboardSection: {
     title: 'Ideas',

@@ -79,7 +79,7 @@ function StatusPill({ status }) {
       background: `oklch(0.78 0.14 ${meta.hue} / 0.14)`,
       color: `oklch(0.85 0.13 ${meta.hue})`,
       border: `1px solid oklch(0.78 0.14 ${meta.hue} / 0.28)`,
-      whiteSpace: 'nowrap',
+      whiteSpace: 'nowrap', textTransform: 'lowercase',
     }}>
       <span style={{ width: 5, height: 5, borderRadius: '50%', background: `oklch(0.78 0.16 ${meta.hue})` }} />
       {status}
@@ -275,31 +275,51 @@ function TasksSection({ tasks, onResolveTask, onOrderChange }) {
 
 // ─── People section ───────────────────────────────────────────────────────────
 
-const CADENCE_LABELS = ['distant', 'occasional', 'moderate', 'regular', 'close']
+const CLOSENESS_VISUAL = {
+  bestie: { active: 'oklch(0.80 0.13 80)',  glow: true,  labelColor: 'oklch(0.88 0.13 80)' },
+  active: { active: 'oklch(0.78 0.14 150)', glow: false, labelColor: 'var(--text-very-dim)' },
+  muted:  { active: 'oklch(0.58 0.02 255)', glow: false, labelColor: 'var(--text-very-dim)' },
+}
 
-function CadenceMeter({ cadence }) {
-  const hue = cadence >= 4 ? 150 : cadence === 3 ? 80 : 22
-  const label = CADENCE_LABELS[Math.max(0, cadence - 1)] ?? '—'
+function ClosenessMeter({ closeness }) {
+  if (!closeness) return null
+  const v = CLOSENESS_VISUAL[closeness.tier] || CLOSENESS_VISUAL.muted
   return (
-    <div title={`${label} contact`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flex: '0 0 auto' }}>
+    <div title={`${closeness.label} contact`} style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 14 }}>
         {[1, 2, 3, 4, 5].map(i => {
-          const on = i <= cadence
+          const on = i <= closeness.bars
           return (
             <div key={i} style={{
               width: 3, height: 3 + i * 2, borderRadius: 1,
-              background: on ? `oklch(0.78 0.14 ${hue})` : 'var(--panel-2)',
+              background: on ? v.active : 'var(--panel-2)',
               border: on ? 'none' : '1px solid var(--border-subtle)',
+              boxShadow: on && v.glow ? '0 0 5px oklch(0.80 0.13 80 / 0.55)' : 'none',
             }} />
           )
         })}
       </div>
-      <div style={{ fontSize: 10, color: 'var(--text-very-dim)', letterSpacing: '0.04em' }}>{label}</div>
+      <span style={{ fontSize: 10.5, letterSpacing: '0.04em', color: v.labelColor }}>{closeness.label}</span>
     </div>
   )
 }
 
+function fmtLastMention(date) {
+  if (!date) return null
+  const now = new Date()
+  const hours = (now - date) / 3600000
+  if (hours < 24) return 'today'
+  if (hours < 48) return 'yesterday'
+  const opts = { day: 'numeric', month: 'short' }
+  if (date.getFullYear() !== now.getFullYear()) opts.year = 'numeric'
+  return date.toLocaleDateString('en-GB', opts)
+}
+
 function PersonCard({ person, handlers, isDragging, isOver, onNavigate }) {
+  const meta = [person.role, person.relationship].filter(Boolean).join(' · ')
+  const lastMention = fmtLastMention(person.lastMentionDate)
+  const taskCount = person.taskCount ?? 0
+
   return (
     <div
       {...handlers}
@@ -309,16 +329,33 @@ function PersonCard({ person, handlers, isDragging, isOver, onNavigate }) {
         border: `1px solid ${isOver ? 'var(--accent)' : 'var(--border)'}`,
         borderRadius: 10, cursor: 'pointer', opacity: isDragging ? 0.45 : 1,
         transition: 'border-color .15s, transform .12s',
-        display: 'flex', alignItems: 'flex-start', gap: 12,
+        display: 'flex', flexDirection: 'column', gap: 4, minHeight: 88,
       }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--border-strong)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = isOver ? 'var(--accent)' : 'var(--border)'; e.currentTarget.style.transform = 'translateY(0)' }}
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)', lineHeight: 1.25 }}>{person.full_name}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-very-dim)', marginTop: 3 }}>{person.role}</div>
+      {/* Line 1: name + closeness meter */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text)', lineHeight: 1.25, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {person.full_name}
+        </div>
+        <ClosenessMeter closeness={person.closeness} />
       </div>
-      <CadenceMeter cadence={person.cadence} />
+      {/* Line 2: role · relationship */}
+      {meta && (
+        <div style={{ fontSize: 12, color: 'var(--text-very-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {meta}
+        </div>
+      )}
+      {/* Footer: last mention left, task count right — pinned to bottom */}
+      <div style={{ marginTop: 'auto', paddingTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-very-dim)' }}>
+          {lastMention ? `last mention: ${lastMention}` : ''}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-very-dim)', whiteSpace: 'nowrap' }}>
+          {taskCount > 0 ? `${taskCount} ${taskCount === 1 ? 'task' : 'tasks'}` : ''}
+        </span>
+      </div>
     </div>
   )
 }

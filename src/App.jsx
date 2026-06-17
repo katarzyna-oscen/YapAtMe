@@ -5,7 +5,7 @@ import { initVault, todayInboxPath, dailyNoteTemplate } from './lib/vaultInit'
 import { generateFile, toSlug } from './lib/templates'
 import { mergeTagsIntoIndex } from './lib/tags'
 import { invalidateFileIndex } from './lib/fileIndex'
-import { restoreTasksForRecreatedPerson, retargetTasksForFile, readTasksIndex } from './lib/tasksIndex'
+import { restoreTasksForRecreatedPerson, retargetTasksForFile, readTasksIndex, writeTasksIndex } from './lib/tasksIndex'
 import { TASKS_INDEX_CHANGED_EVENT } from './lib/tasksIndex'
 import { clearProcessedState } from './lib/processedNotes'
 import { parseFrontmatter, buildFileContent } from './lib/frontmatter'
@@ -75,6 +75,8 @@ export default function App() {
     vaultReady,
     folderName,
     openFolder,
+    connectHandle,
+    openFolderWithHandle,
     writeFile,
     readFile,
     deleteFile,
@@ -101,6 +103,8 @@ export default function App() {
   // Onboarding gate: null = checking, true = needed, false = done
   const [onboardingNeeded, setOnboardingNeeded] = useState(null)
   const [showFirstRun, setShowFirstRun] = useState(false)
+  const [prefilledFolder, setPrefilledFolder] = useState(null)
+  const [showDemoBanner, setShowDemoBanner] = useState(false)
 
   // Persist newFilePaths to IndexedDB so chip survives reload
   useEffect(() => {
@@ -212,14 +216,16 @@ export default function App() {
   // Determine whether to show onboarding on first mount
   useEffect(() => {
     const check = async () => {
-      // Existing user: stored vault handle → skip onboarding
+      // If onboarding was explicitly reset (e.g. from Settings), show it regardless of stored handle
+      const done = await dbGet('settings', 'onboardingComplete').catch(() => null)
+      if (done === false) { setOnboardingNeeded(true); return }
+      // Existing user with a stored vault handle → skip onboarding
       try {
         const handle = await dbGet('handles', 'rootDir')
         if (handle) { setOnboardingNeeded(false); return }
       } catch {}
-      // Check if onboarding was previously completed
-      const done = await dbGet('settings', 'onboardingComplete').catch(() => false)
-      setOnboardingNeeded(!done)
+      // No handle and no completion flag → new user
+      setOnboardingNeeded(done !== true)
     }
     check()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -230,49 +236,115 @@ export default function App() {
     dbGet('settings', 'showFirstRunPopup').then(v => {
       if (v) setShowFirstRun(true)
     }).catch(() => {})
-  }, [vaultReady, onboardingNeeded])
+    dbGet('settings', 'demoNotePath').then(async v => {
+      if (!v) return
+      // Only show banner if the demo note file actually exists (guards against stale IDB after re-onboarding)
+      const exists = await fileExists(v).catch(() => false)
+      if (exists) setShowDemoBanner(true)
+      else dbPut('settings', 'demoNotePath', null).catch(() => {})
+    }).catch(() => {})
+  }, [vaultReady, onboardingNeeded, fileExists])
+
+  const handleExitDemo = useCallback(async () => {
+    setShowDemoBanner(false)
+    try {
+      const demoPath = await dbGet('settings', 'demoNotePath').catch(() => null)
+
+      // Remove demo inbox note
+      if (demoPath) await deleteFile(demoPath).catch(() => {})
+
+      // Remove the specific demo entities by slug
+      const demoPaths = [
+        'people/alex-chen.md',
+        'projects/website-redesign.md',
+      ]
+      for (const p of demoPaths) await deleteFile(p).catch(() => {})
+
+      // Remove tasks linked to demo entities or sourced from demo note
+      const DEMO_FILES = new Set([...demoPaths, ...(demoPath ? [demoPath] : [])])
+      const allTasks = await readTasksIndex(readFile).catch(() => [])
+      const kept = allTasks.filter(t =>
+        !DEMO_FILES.has(t.sourceNote) &&
+        !DEMO_FILES.has(t.file)
+      )
+      if (kept.length !== allTasks.length) await writeTasksIndex(writeFile, kept)
+
+      await dbPut('settings', 'demoNotePath', null).catch(() => {})
+      await dbPut('settings', 'demoBaseline', null).catch(() => {})
+      refreshTree()
+    } catch (err) {
+      console.warn('Exit demo failed:', err?.message || err)
+    }
+  }, [deleteFile, readFile, writeFile, listTree])
+
+  // Wrapper for the sidebar "Change vault folder" button.
+  // Picks folder, checks if truly empty → onboarding. Non-empty → connect normally.
+  const handleChangeVaultFolder = useCallback(async () => {
+    if (typeof window.showDirectoryPicker !== 'function') return
+    let handle
+    try {
+      handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+    } catch (err) {
+      if (err?.name === 'AbortError') return
+      console.warn('Folder pick error:', err)
+      return
+    }
+
+    // Count root-level visible entries to determine if folder is empty
+    // (skip hidden files like .DS_Store which macOS adds to empty folders)
+    let entryCount = 0
+    try {
+      for await (const entry of handle.values()) {
+        if (!entry.name.startsWith('.')) {
+          entryCount++
+          break
+        }
+      }
+    } catch {}
+
+    if (entryCount === 0) {
+      // Truly empty folder — store handle (so writeFile works) and show onboarding
+      await connectHandle(handle)
+      setPrefilledFolder({ name: handle.name })
+      setOnboardingNeeded(true)
+    } else {
+      // Folder has content — connect as existing vault (runs initVault, sets vaultReady)
+      await openFolderWithHandle(handle)
+      setOnboardingNeeded(false)
+      // Reset navigation so stale note/entity from previous vault isn't shown
+      setActivePage('inbox')
+      setActiveFile(null)
+      // Clear all caches from previous vault
+      await invalidateFileIndex()  // global file-index cache (wikilink suggestions, process note)
+      setEntityDisplayNames(new Map())
+      setTree({})  // Clear tree immediately to show vault is switching
+      // Trigger tree refresh via vaultInitialised flag
+      setVaultInitialised(false)
+    }
+  }, [connectHandle, openFolderWithHandle, listTree, setTree])
 
   // Handle onboarding completion: write vault files, save settings, mark done
-  const handleOnboardingComplete = useCallback(async (data) => {
-    const today = new Date().toISOString().slice(0, 10)
+  const handleOnboardingComplete = useCallback(async (data) => {    const today = new Date().toISOString().slice(0, 10)
     const ownerSlug = toSlug(data.name)
     const ownerPath = `people/${ownerSlug}.md`
 
-    // Create vault owner person file
+    // Create vault owner person file (using canonical template, relationship = Me)
     if (data.name.trim()) {
-      await writeFile(ownerPath, buildFileContent({
-        type: 'person',
-        full_name: data.name.trim(),
-        relationship: 'Me',
-        status: 'Active',
-        last_updated: today,
-      }, '## Summary\n_This is you._\n\n## Delegate\n\n## Talk About\n\n## Recent Mentions\n')).catch(() => {})
+      const { content: ownerContent } = generateFile('people', data.name.trim(), { relationship: 'Me' })
+      await writeFile(ownerPath, ownerContent).catch(() => {})
     }
 
     // Seed people + projects (Path A only, if not skipped)
     if (data.path === 'new' && data.seeded) {
       for (const person of data.seedPeople) {
         if (!person.name.trim()) continue
-        const slug = toSlug(person.name)
-        await writeFile(`people/${slug}.md`, buildFileContent({
-          type: 'person',
-          full_name: person.name.trim(),
-          role: person.role || '',
-          status: 'Active',
-          last_updated: today,
-          demo: true,
-        }, '## Delegate\n\n## Talk About\n\n## Recent Mentions\n')).catch(() => {})
+        const { content } = generateFile('people', person.name.trim(), { role: person.role || '' })
+        await writeFile(`people/${toSlug(person.name)}.md`, content).catch(() => {})
       }
       for (const project of data.seedProjects) {
         if (!project.name.trim()) continue
-        const slug = toSlug(project.name)
-        await writeFile(`projects/${slug}.md`, buildFileContent({
-          type: 'project',
-          name: project.name.trim(),
-          status: 'Untriaged',
-          last_updated: today,
-          demo: true,
-        }, '## Open Actions\n\n## Decisions\n\n## Recent Mentions\n')).catch(() => {})
+        const { content } = generateFile('projects', project.name.trim())
+        await writeFile(`projects/${toSlug(project.name)}.md`, content).catch(() => {})
       }
     }
 
@@ -282,8 +354,9 @@ export default function App() {
       const mm = String(new Date().getMonth() + 1).padStart(2, '0')
       const yyyy = new Date().getFullYear()
       const demoPath = `inbox/${dd}-${mm}-${yyyy}.md`
-      const demoContent = `Met with [[Alex Chen]] today to discuss the [[Website Redesign]] project. We need to finalise the colour palette by end of week — I\'ll send her the options tomorrow.\n\nAlso had a thought: what if we built a browser extension that lets you capture highlights directly into the vault? Could be huge for research workflows. #idea\n\n#action Review colour palette options\n`
+      const demoContent = `# ${dd}-${mm}-${yyyy}\n\nMet with Alex Chen today to discuss the Website Redesign project. We need to finalise the colour palette by end of week — I'll send her the options tomorrow.\n\nAlso had a thought: what if we built a browser extension that lets you capture highlights directly into the vault? Could be huge for research workflows.\n\nNeed to review colour palette options before the next call.\n`
       await writeFile(demoPath, demoContent).catch(() => {})
+      await dbPut('settings', 'demoNotePath', demoPath).catch(() => {})
     }
 
     // Write vault marker
@@ -294,7 +367,7 @@ export default function App() {
       ...settings,
       provider: data.provider,
       apiKey: data.apiKey,
-      model: '',
+      model: data.model || '',
       enabledModules: data.modules,
       ...(data.name.trim() ? { writerFile: ownerPath } : {}),
     }).catch(() => {})
@@ -309,6 +382,8 @@ export default function App() {
 
     setOnboardingNeeded(false)
     setActivePage('inbox')
+    // Force sidebar tree refresh now that vault files have been written
+    setTimeout(() => refreshTree(), 100)
   }, [writeFile, saveSettings, settings])
 
   useEffect(() => {
@@ -392,7 +467,7 @@ export default function App() {
       .catch(() => setTree({}))
     refreshBacklogCount()
     refreshCounts()
-  }, [vaultReady, listTree, vaultInitialised, refreshBacklogCount, refreshCounts])
+  }, [vaultReady, listTree, vaultInitialised, onboardingNeeded, refreshBacklogCount, refreshCounts])
 
   // Compute active plans count: projects + ideas with a non-empty ## Current Plan and not archived
   useEffect(() => {
@@ -747,6 +822,7 @@ export default function App() {
         openFolder={openFolder}
         fileExists={fileExists}
         listTree={listTree}
+        initialFolder={prefilledFolder}
         onComplete={handleOnboardingComplete}
       />
     )
@@ -777,7 +853,7 @@ export default function App() {
         activePlansCount={activePlansCount}
         tree={tree}
         onNavigate={navigate}
-        onOpenFolder={openFolder}
+        onOpenFolder={handleChangeVaultFolder}
         onCreateFile={handleCreateFile}
         onRefreshDashboard={refreshDashboard}
         onArchiveFile={archiveFile}
@@ -1063,6 +1139,32 @@ export default function App() {
           onSelect={handleCreateFromWikilink}
           onClose={() => setWikiCreatePopover({ open: false, name: '', x: 0, y: 0 })}
         />
+      )}
+      {showDemoBanner && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 900,
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 14px 10px 16px',
+          background: 'var(--panel-pop, var(--panel))',
+          border: '1px solid oklch(0.80 0.13 80 / 0.35)',
+          borderRadius: 12,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.45)',
+          fontSize: 13,
+        }}>
+          <span style={{ color: 'var(--text-dim)' }}>Demo vault active</span>
+          <button
+            onClick={handleExitDemo}
+            style={{
+              padding: '5px 12px', borderRadius: 7, fontSize: 12.5, fontWeight: 500,
+              background: 'oklch(0.70 0.18 22 / 0.18)',
+              color: 'oklch(0.88 0.16 22)',
+              border: '1px solid oklch(0.70 0.18 22 / 0.45)',
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            Exit demo
+          </button>
+        </div>
       )}
       {showFirstRun && (
         <FirstRunPopup

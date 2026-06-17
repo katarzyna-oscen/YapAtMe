@@ -6,7 +6,7 @@ import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import DictateBtn from '../components/DictateBtn'
 import TrashMenuButton from '../components/TrashMenuButton'
 import TaskPanel from '../components/TaskPanel'
-import { readTasksIndex, resolveTaskEntry, retargetTasksForFile, appendTaskEntry, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
+import { readTasksIndex, resolveTaskEntry, retargetTasksForFile, appendTaskEntry, appendTaskEntries, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
 import { invalidateFileIndex } from '../lib/fileIndex'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
@@ -119,14 +119,30 @@ export default function ProjectViewer({
       setLastUpdated(fields?.last_updated || '')
 
       // Extract ## Current Plan section; keep the rest for Milkdown
+      // Strip task sections (Open Actions, Delegations, Decisions) and Summary
+      // from the editor body — they are rendered by TaskPanel, not Milkdown.
+      const STRIPPED_PROJECT = /^##\s+(Summary|Open Actions|Delegations|Decisions)\s*$/i
+      function stripProjectEditorSections(text) {
+        const lines = text.split('\n')
+        const out = []
+        let skipping = false
+        for (const line of lines) {
+          if (/^##\s+/.test(line)) skipping = STRIPPED_PROJECT.test(line.trim())
+          if (!skipping) out.push(line)
+        }
+        return out.join('\n').replace(/\n{3,}/g, '\n\n').trimStart()
+      }
+
       const planMatch = (body || '').match(/##\s+Current Plan\s*\n([\s\S]*?)(?=\n##\s|$)/i)
       const planContent = planMatch ? planMatch[1].trimEnd() : ''
       setSectionCurrentPlan(planContent)
       sectionCurrentPlanRef.current = planContent
-      const bodyWithoutPlan = (body || '')
-        .replace(/##\s+Current Plan\s*\n[\s\S]*?(?=\n##\s|$)/i, '')
-        .replace(/\n{3,}/g, '\n\n')
-        .trimStart()
+      const bodyWithoutPlan = stripProjectEditorSections(
+        (body || '')
+          .replace(/##\s+Current Plan\s*\n[\s\S]*?(?=\n##\s|$)/i, '')
+          .replace(/\n{3,}/g, '\n\n')
+          .trimStart()
+      )
       setEditorBody(bodyWithoutPlan)
     } catch {
       setName('')
@@ -359,6 +375,14 @@ export default function ProjectViewer({
     window.dispatchEvent(new Event('memostack:tasks-index-changed'))
   }
 
+  const handlePlanAddMultiple = async (titles) => {
+    await appendTaskEntries(readFile, writeFile, titles.map((title) => ({
+      file: filePath, module: 'projects', section: '## Current Plan', title, tags: ['action'],
+    })))
+    onTasksChanged?.()
+    window.dispatchEvent(new Event('memostack:tasks-index-changed'))
+  }
+
   const handlePlanRename = async (oldTitle, newTitle, isDone) => {
     await removePlanTask(readFile, writeFile, filePath, '## Current Plan', oldTitle)
     await appendTaskEntry(readFile, writeFile, {
@@ -405,6 +429,9 @@ export default function ProjectViewer({
   const fileLabel = name || filePath?.replace('projects/', '').replace('.md', '') || 'this project'
   const s = STATUS_STYLE[status] || STATUS_STYLE.Untriaged
 
+  const ownerPeople = (wikilinkSuggestions ?? [])
+    .filter((sug) => sug?.type === 'person')
+    .map((sug) => sug.name)
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-very-dim)', fontSize: 13 }}>
@@ -526,7 +553,7 @@ export default function ProjectViewer({
               {status}
             </button>
 
-            <PillInput value={owner} onChange={setOwner} placeholder="Owner" />
+            <OwnerPicker value={owner} onChange={setOwner} people={ownerPeople} />
             <PillInput value={domain} onChange={setDomain} placeholder="Domain" />
 
             {actionsCount > 0 && (
@@ -588,6 +615,7 @@ export default function ProjectViewer({
               onToggle={handlePlanToggle}
               onDelete={handlePlanDelete}
               onAdd={handlePlanAdd}
+              onAddMultiple={handlePlanAddMultiple}
               onRename={handlePlanRename}
             />
           </div>
@@ -608,6 +636,155 @@ export default function ProjectViewer({
         onConfirm={executeRename}
         onCancel={cancelRename}
       />
+    </div>
+  )
+}
+
+function OwnerPicker({ value, onChange, people = [] }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const wrapRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  const q = query.trim().toLowerCase()
+  const matches = people.filter((p) => !q || p.toLowerCase().includes(q))
+  const hasExactMatch = people.some((p) => p.toLowerCase() === q)
+
+  const choose = (val) => {
+    onChange(val)
+    setQuery('')
+    setOpen(false)
+  }
+
+  // Collapsed pill when nothing selected and dropdown closed
+  if (!value && !open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          padding: '3px 8px',
+          background: 'transparent',
+          border: '1px dashed var(--border-subtle)',
+          borderRadius: 5,
+          fontSize: 12,
+          color: 'var(--text-very-dim)',
+          cursor: 'text',
+          fontFamily: 'inherit',
+        }}
+      >
+        + Owner
+      </button>
+    )
+  }
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', display: 'inline-flex' }}>
+      <input
+        type="text"
+        value={open ? query : value}
+        autoFocus={open && !value}
+        onChange={(e) => { setQuery(e.target.value); if (!open) setOpen(true) }}
+        onFocus={() => { setQuery(value); setOpen(true) }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); choose(query.trim()) }
+          else if (e.key === 'Escape') { setOpen(false) }
+        }}
+        placeholder="Owner"
+        style={{
+          padding: '3px 8px',
+          background: 'transparent',
+          border: `1px solid ${open ? 'var(--border-strong)' : 'var(--border)'}`,
+          borderRadius: 5,
+          fontSize: 12,
+          color: 'var(--text-dim)',
+          outline: 'none',
+          fontFamily: 'inherit',
+          minWidth: 60,
+          transition: 'border-color .12s',
+        }}
+      />
+      {open && (matches.length > 0 || (q && !hasExactMatch)) && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            left: 0,
+            minWidth: 160,
+            maxHeight: 220,
+            overflowY: 'auto',
+            background: 'var(--panel)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+            zIndex: 50,
+            padding: 4,
+          }}
+        >
+          {matches.map((p) => (
+            <button
+              key={p}
+              onMouseDown={(e) => { e.preventDefault(); choose(p) }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                width: '100%',
+                padding: '5px 8px',
+                background: p === value ? 'var(--panel-2)' : 'transparent',
+                border: 'none',
+                borderRadius: 4,
+                fontSize: 12,
+                color: 'var(--text)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--panel-2)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = p === value ? 'var(--panel-2)' : 'transparent' }}
+            >
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--info)', flexShrink: 0 }} />
+              {p}
+            </button>
+          ))}
+          {q && !hasExactMatch && (
+            <button
+              onMouseDown={(e) => { e.preventDefault(); choose(query.trim()) }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                width: '100%',
+                padding: '5px 8px',
+                background: 'transparent',
+                border: 'none',
+                borderTop: matches.length > 0 ? '1px solid var(--border-subtle)' : 'none',
+                marginTop: matches.length > 0 ? 4 : 0,
+                paddingTop: matches.length > 0 ? 8 : 5,
+                borderRadius: 4,
+                fontSize: 12,
+                color: 'var(--text-dim)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--panel-2)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              + Add “{query.trim()}”
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

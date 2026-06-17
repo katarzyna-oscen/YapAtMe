@@ -83,7 +83,10 @@ function buildEntityReferenceBlock(allowedFiles) {
   const projectRefs = (allowedFiles || [])
     .filter((path) => String(path).toLowerCase().startsWith('projects/') && String(path).toLowerCase().endsWith('.md'))
     .map((path) => `- ${humanizeEntityName(path)} → ${path}`)
-  return `Known people:\n${peopleRefs.length ? peopleRefs.join('\n') : '- (none)'}\n\nKnown projects:\n${projectRefs.length ? projectRefs.join('\n') : '- (none)'}`
+  const ideaRefs = (allowedFiles || [])
+    .filter((path) => String(path).toLowerCase().startsWith('ideas/') && String(path).toLowerCase().endsWith('.md') && !path.toLowerCase().endsWith('backlog.md'))
+    .map((path) => `- ${humanizeEntityName(path)} → ${path}`)
+  return `Known people:\n${peopleRefs.length ? peopleRefs.join('\n') : '- (none)'}\n\nKnown projects:\n${projectRefs.length ? projectRefs.join('\n') : '- (none)'}\n\nKnown ideas:\n${ideaRefs.length ? ideaRefs.join('\n') : '- (none)'}`
 }
 
 function buildMentionSystemPrompt(allowedFiles) {
@@ -95,19 +98,19 @@ Always preserve it exactly as-is on its own line, separated from the note body b
 Never merge the heading with the body text.
 Never append body content to the heading line.
 
-For every person or project referenced by wikilink ([[Name]]), emit one mention change.
+For every person, project, or idea referenced by wikilink ([[Name]]), emit one mention change.
 One mention per entity per note — never more.
 
 Return STRICT JSON only:
 {
   "changes": [
     {
-      "target_file": "people/Name.md | projects/Name.md",
+      "target_file": "people/Name.md | projects/Name.md | ideas/Name.md",
       "target_section": "## Recent Mentions",
       "content": "[[DD-MM-YYYY]] — [one concise sentence summary]",
       "marker": "mention",
       "title": "[short label]",
-      "module": "people | projects"
+      "module": "people | projects | ideas"
     }
   ]
 }
@@ -132,7 +135,7 @@ Rules:
 
 function buildTaskSystemPrompt(allowedFiles) {
   const entityReferenceBlock = buildEntityReferenceBlock(allowedFiles)
-  return `You extract actionable tasks from a daily note.
+  return `You extract actionable tasks AND ideas from a daily note.
 
 The first line of every inbox note is a date heading formatted as # DD-MM-YYYY.
 Always preserve it exactly as-is on its own line, separated from the note body by a blank line.
@@ -159,44 +162,80 @@ Valid write targets:
 ${allowedFiles.length ? allowedFiles.join('\n') : '(none)'}
 
 Rules:
-- Extract every actionable item from the note — do not skip any sentence.
+- Extract every actionable item AND every idea/concept from the note — do not skip any sentence.
 - Generate task changes for ALL actionable sentences, regardless of whether the mentioned person or entity exists in the vault or has a file in the allowed list.
 - One task per actionable item. Never duplicate the same task across multiple people.
 - Each task has exactly one owner — the person who must act or decide.
   Do not fan out one task to every person mentioned in a sentence.
   Example: "Diana questioned whether Lyubo should attend" → one follow-up on Diana.md only.
-- If a sentence contains a clear action, follow-up, or delegation involving a person who is NOT in the vault, generate the change with target_file: null and module: "unattached". Do not skip the sentence.
+- If a sentence contains a clear action, follow-up, or delegation but no person in the vault can be identified as owner, generate the change with target_file: null and module: "unattached". Do not skip the sentence. It will be routed to the vault owner automatically.
+- First-person items ("I need to...", "I will...", "I should...") are tasks with no specific person owner — output them with target_file: null and module: "unattached". They will be routed to the vault owner automatically.
 - You do not require [[wikilink]] syntax to identify actionable content. Plain text person names are sufficient to extract a task.
 - Task title: concise imperative phrase, 10 words max, no raw sentences copied from the note.
-- First-person pending items are tasks even when no person is named as owner:
-  "I'm waiting on reimbursement" → action task on the relevant person's file
-  "I need to..." → action task
-  "To be decided" → decision task
 - Markers (mutually exclusive per item — pick one):
   action    = the writer must do something
-  follow-up = the writer needs to raise something with a specific person
+  follow-up = the writer needs to raise something with, or get input/approval from, a specific person
   delegate  = another person must do or decide something
-  decision  = a decision is pending
+  decision  = an open question about a project or topic where the decision-maker is NOT a named person in the vault
+  idea      = a new creative concept, feature proposal, or exploration thought that has not been captured as a named idea yet
+- Decision vs follow-up distinction (critical):
+  "needs Diana's decision" / "waiting for Diana's approval" / "Diana needs to decide" → follow-up on Diana, NOT a decision marker.
+  Use decision ONLY when no named person in the vault is the decision-maker (e.g. "we still need to decide the launch date").
+  NEVER emit a decision change targeting a people/ file. Decisions only go on project files.
+- Decision routing rule: decisions belong on PROJECT files, not person files. If a decision involves both a person and a project, route it to the project file. People files do not have a Decisions section. If no project file is identifiable, output target_file: null and module: "unattached".
 - Do not include "- [ ]" in task content. Return plain task text in content and title.
+- Idea marker rules:
+  ALWAYS emit an idea change for any sentence that proposes, imagines, or explores a new concept, feature, or workflow improvement — even if the writer is not committing to it.
+  Phrases like "been thinking about", "want to explore", "idea:", "what if", "could be interesting" are strong signals.
+  Do NOT skip ideas just because they feel speculative — capture them all.
+  Route idea markers to: target_file: ideas/backlog.md, target_section: ## Backlog, module: ideas.
+  Content format for ideas: [[DD-MM-YYYY]] — [one sentence describing the idea]
+  Where DD-MM-YYYY is today's note date.
 - Sections by marker:
   follow-up → ## Talk About
   delegate  → ## Delegate
   action    → ## Open Actions (projects) or ## Talk About (people)
   decision  → ## Decisions
-- Few-shot example:
+  idea      → ideas/backlog.md > ## Backlog
+- Few-shot examples:
   Input: "I need to talk with Sophie about weather in Berlin."
+  Output:
+  {
+    "target_file": "people/Sophie.md",
+    "target_section": "## Talk About",
+    "content": "Talk about Berlin weather",
+    "marker": "follow-up",
+    "title": "Talk about Berlin weather",
+    "module": "people"
+  }
+  (Reason: "talk with X about Y" means the writer needs to raise this with X → follow-up on X's Talk About, NOT an action on the vault owner.)
+
+  Input: "I need to prioritise my calendar this week."
   Output:
   {
     "target_file": null,
     "target_section": "## Open Actions",
-    "content": "Talk with Sophie about Berlin weather",
+    "content": "Prioritise calendar this week",
     "marker": "action",
-    "title": "Talk with Sophie about Berlin weather",
+    "title": "Prioritise calendar this week",
     "module": "unattached"
   }
+  (Reason: pure first-person self-action with no other person to discuss with → action on null/owner.)
+
+  Input: "Been thinking about a voice shortcut that drops a note directly into inbox."
+  Output:
+  {
+    "target_file": "ideas/backlog.md",
+    "target_section": "## Backlog",
+    "content": "[[DD-MM-YYYY]] — Voice shortcut that drops a spoken note directly into inbox",
+    "marker": "idea",
+    "title": "Voice shortcut to inbox",
+    "module": "ideas"
+  }
 - Only emit changes targeting files in Valid write targets.
-- Exception: when target_file is null and module is "unattached", the change is valid even without a matching file in Valid write targets.
-- Return { "changes": [] } if there is nothing actionable.
+- Exception 1: when target_file is null and module is "unattached", the change is valid even without a matching file in Valid write targets.
+- Exception 2: idea marker changes targeting ideas/backlog.md are ALWAYS valid regardless of whether ideas/backlog.md appears in Valid write targets.
+- Return { "changes": [] } if there is nothing actionable and no ideas.
 `
 }
 
@@ -358,7 +397,7 @@ function extractEntityCandidates(noteContent) {
   }
 
   // 2. Extract capitalized names from person-name contexts (after with/and/to/from/met/called/told/asked/emailed/pinged)
-  const NAME_CONTEXT_RE = /\b(?:with|and|to|from|met|called|told|asked|emailed|pinged|cc|via)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/g
+  const NAME_CONTEXT_RE = /\b(?:with|and|to|from|met|called|told|asked|emailed|pinged|cc|via)\s+([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})/gu
   const STOP_WORDS = new Set([
     'the', 'this', 'that', 'then', 'them', 'they', 'their', 'there', 'these', 'those',
     'today', 'tomorrow', 'tuesday', 'thursday', 'wednesday', 'monday', 'friday', 'saturday', 'sunday',
@@ -366,6 +405,31 @@ function extractEntityCandidates(noteContent) {
     'quick', 'some', 'about', 'also', 'just', 'very', 'much', 'many', 'more', 'most',
   ])
   for (const match of text.matchAll(NAME_CONTEXT_RE)) {
+    const candidate = match[1].trim()
+    if (!candidate || candidate.length < 2) continue
+    if (STOP_WORDS.has(candidate.toLowerCase())) continue
+    const key = candidate.toLowerCase()
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(candidate)
+  }
+
+  // 2b. Conjunction lists: "Paweł and Alorah", "Alex, Maria and Sam" — capture BOTH sides.
+  // The NAME_CONTEXT rule only grabs the word after "and", so the word before is missed.
+  const CONJ_RE = /\b([A-Z][\w\u00C0-\u017E]+)\s*(?:,|and|&)\s*([A-Z][\w\u00C0-\u017E]+)\b/gu
+  for (const match of text.matchAll(CONJ_RE)) {
+    for (const candidate of [match[1], match[2]]) {
+      const name = candidate.trim()
+      if (!name || name.length < 2) continue
+      if (STOP_WORDS.has(name.toLowerCase())) continue
+      const key = name.toLowerCase()
+      if (!buckets.has(key)) buckets.set(key, [])
+      buckets.get(key).push(name)
+    }
+  }
+
+  // 3. Extract names from possessive form (e.g. "Diana's decision", "Paweł's report")
+  const POSSESSIVE_RE = /\b([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+)?)['\u2019]s\b/gu
+  for (const match of text.matchAll(POSSESSIVE_RE)) {
     const candidate = match[1].trim()
     if (!candidate || candidate.length < 2) continue
     if (STOP_WORDS.has(candidate.toLowerCase())) continue
@@ -593,36 +657,101 @@ function runDeterministicEntityPrepass(noteContent, allowedFiles = [], enabledMo
     }
   }
 
-  // Scan for known projects via multi-word capitalized sequences in the text.
-  // This catches project names in prose (not in wikilinks, not after prepositions)
-  // and handles slug-normalized names like "Ubuntu.com" → "ubuntucom-..."
+  // Scan for known projects by checking if each known project name appears in the note text.
+  // This is name-first (not candidate-first) to avoid false positives.
   if (projectPaths.length > 0) {
-    // Words that should never START a matched sequence (sentence starters, prepositions, articles)
-    const STOP_STARTS = new Set([
-      'on','in','at','to','for','with','by','of','the','a','an','and','or','but','yet','so','nor',
-      'from','about','into','over','after','before','as','that','this','these','those','via','per',
-    ])
-    const MULTI_WORD_CAP_RE = /(?<!\[\[)\b([A-Z][A-Za-z0-9.]*(?:\s+[A-Z][A-Za-z0-9.]+)+)\b(?!\]\])/g
-    const scanned = new Set()
-    for (const match of out.matchAll(MULTI_WORD_CAP_RE)) {
-      const candidate = match[1].trim()
-      if (!candidate || scanned.has(candidate.toLowerCase())) continue
-      // Skip sequences that start with a stop word (e.g. "On Memory OS App" → "On" is a preposition)
-      const firstWord = candidate.split(/\s+/)[0].toLowerCase()
-      if (STOP_STARTS.has(firstWord)) continue
-      scanned.add(candidate.toLowerCase())
-      const projectPath = matchEntityPath(candidate, projectPaths, true)
-      if (!projectPath) continue
+    for (const projectPath of projectPaths) {
       const display = humanizeEntityName(projectPath)
       if (linkedProjects.has(display)) continue
-      // Use user's original text as the wikilink name (ensureEntityWikilink is case-insensitive)
-      out = ensureEntityWikilink(out, candidate)
+      // Build a slug version for fuzzy matching (lowercase, strip hyphens/underscores)
+      const slug = display.toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim()
+      const noteForMatch = out.toLowerCase()
+      if (!noteForMatch.includes(display.toLowerCase()) && !noteForMatch.includes(slug)) continue
+      out = ensureEntityWikilink(out, display)
       linkedProjects.add(display)
       linkedProjectLookups.add(normalizeProjectLookup(display))
     }
   }
 
-  const filteredUnknownPeople = [...new Set(unknownPeople.map((name) => name.trim()).filter(Boolean))]
+  // Secondary signal: detect project-noun phrases regardless of capitalisation.
+  // Dictated text won't have capital letters, so we anchor on the word "project" (or "project of")
+  // and walk BACKWARD collecting content words until a stop word, yielding a tight project name.
+  // Runs even when no projects exist yet (fresh vault).
+  if (enabledModules.projects !== false) {
+    const PROJ_STOP = new Set([
+      'the','a','an','this','that','these','those','our','my','your','their','its',
+      'on','in','at','to','for','with','by','of','from','about','into','over','than',
+      'and','or','but','so','yet','nor','as','via','per','out','up','down','off',
+      'i','we','he','she','they','it','you','me','us','them','him','her',
+      'is','are','was','were','be','been','being','have','has','had','am',
+      'do','does','did','will','would','could','should','may','might','must','can','shall',
+      'now','then','also','just','very','some','any','all','more','most','slightly','quite','really',
+      'today','tomorrow','yesterday','monday','tuesday','wednesday','thursday','friday','saturday','sunday',
+      'late','early','soon','later','again','still','back','here','there','when','while','after','before',
+    ])
+
+    const tokens = out.split(/(\s+)/) // keep separators so indices map back
+    const wordTokens = []
+    for (let i = 0; i < tokens.length; i += 1) {
+      if (/^\s+$/.test(tokens[i]) || tokens[i] === '') continue
+      wordTokens.push(tokens[i])
+    }
+    const cleanWord = (w) => String(w || '').replace(/[^\w\u00C0-\u017E]/g, '').toLowerCase()
+
+    // Walk backward from index `anchorIdx` collecting content words until a stop word.
+    // Returns the title-cased phrase (excludes the anchor word itself).
+    const collectBackward = (anchorIdx, maxWords = 4) => {
+      const collected = []
+      for (let j = anchorIdx - 1; j >= 0 && collected.length < maxWords; j -= 1) {
+        const w = cleanWord(wordTokens[j])
+        if (!w || PROJ_STOP.has(w)) break
+        // Stop if word is inside an existing wikilink
+        if (/\[\[|\]\]/.test(wordTokens[j])) break
+        collected.unshift(wordTokens[j].replace(/[^\w\u00C0-\u017E]/g, ''))
+      }
+      return collected
+    }
+
+    const pushProject = (words, extraNoun) => {
+      const all = extraNoun ? [...words, extraNoun] : words
+      if (all.length === 0) return
+      if (all.every(w => PROJ_STOP.has(w.toLowerCase()))) return
+      const titleCased = all.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      if (matchEntityPath(titleCased, projectPaths, true)) return // known project
+      const norm = titleCased.toLowerCase()
+      if (!unknownProjects.some(u => u.toLowerCase() === norm)) {
+        unknownProjects.push(titleCased)
+      }
+    }
+
+    for (let i = 0; i < wordTokens.length; i += 1) {
+      const w = cleanWord(wordTokens[i])
+      // Anchor only on the literal word "project" — most reliable signal in dictated prose.
+      if (w !== 'project') continue
+      // Handle "project of X" — walk forward
+      if (cleanWord(wordTokens[i + 1]) === 'of') {
+        const fwd = []
+        for (let j = i + 2; j < wordTokens.length && fwd.length < 4; j += 1) {
+          const fw = cleanWord(wordTokens[j])
+          if (!fw || PROJ_STOP.has(fw)) break
+          if (/\[\[|\]\]/.test(wordTokens[j])) break
+          fwd.push(wordTokens[j].replace(/[^\w\u00C0-\u017E]/g, ''))
+        }
+        pushProject(fwd)
+      } else {
+        // "X project" — walk backward
+        pushProject(collectBackward(i))
+      }
+    }
+  }
+
+  // Exclude from unknownPeople any candidate that also appears in unknownProjects
+  // (prevents "Canonical Slides" showing as both PERSON and PROJECT in CleanupModal)
+  const unknownProjectsLower = new Set(unknownProjects.map(n => n.toLowerCase()))
+  const filteredUnknownPeople = [...new Set(
+    unknownPeople.map((name) => name.trim()).filter(Boolean)
+      .filter(name => !unknownProjectsLower.has(name.toLowerCase()))
+  )]
 
   const result = {
     noteContent: normalizeNestedWikilinks(out),
@@ -845,7 +974,8 @@ const _PROJECT_NOUNS = new Set([
   'revamp', 'framework', 'system', 'app', 'project', 'platform', 'initiative',
   'tool', 'service', 'upgrade', 'redesign', 'migration', 'integration', 'portal',
   'suite', 'hub', 'engine', 'dashboard', 'api', 'website', 'site', 'page', 'plan',
-  'feature', 'module', 'refactor', 'release', 'launch', 'sprint',
+  'feature', 'module', 'refactor', 'release', 'launch', 'sprint', 'ops', 'operations',
+  'slide', 'slides', 'deck', 'template', 'templates', 'doc', 'docs', 'spec', 'brief', 'report', 'board', 'flow',
 ])
 
 function classifyUnknownEntityType(name) {
@@ -1257,6 +1387,10 @@ export function useNoteProcessor() {
         linkedNoteContent,
         peopleAndProjectAllowed.length > 0 ? peopleAndProjectAllowed : scopedAllowedFiles
       )
+      // Always include ideas/backlog.md when ideas module is enabled so the LLM can route idea markers there.
+      if (enabledModules?.ideas !== false && !promptAllowFiles.includes('ideas/backlog.md')) {
+        promptAllowFiles = [...promptAllowFiles, 'ideas/backlog.md']
+      }
       const writerFile = enabledModules?.people !== false ? String(settings?.writerFile || '').trim() : ''
       if (writerFile && scopedAllowedFiles.includes(writerFile) && !promptAllowFiles.includes(writerFile)) {
         promptAllowFiles = [...promptAllowFiles, writerFile]
@@ -1295,7 +1429,11 @@ export function useNoteProcessor() {
         taskRawLength: taskRaw?.length,
       })
 
-      let mentionChanges = safeParseChanges(mentionRaw)
+      let mentionChanges = safeParseChanges(mentionRaw).filter((change) => {
+        // Decisions on people files are invalid — suppress from mention pass too
+        if (normalizeMarker(change?.marker) === 'decision' && String(change?.target_file || '').startsWith('people/')) return false
+        return true
+      })
 
       const MARKER_SECTION_MAP = {
         mention: null,
@@ -1327,20 +1465,30 @@ export function useNoteProcessor() {
         }
       })
 
-      taskChanges = taskChanges.map((change) => {
+      taskChanges = taskChanges.flatMap((change) => {
         const marker = normalizeMarker(change?.marker)
-        if (marker !== 'action') return change
+        // Only route task-ish markers — not mention or idea
+        if (!['action', 'follow-up', 'urgent', 'important', 'delegate', 'decision'].includes(marker)) return [change]
 
-        const sentence = `${change?.title || ''} ${change?.content || ''}`.toLowerCase()
-        const isFirstPerson = /\b(i\b|i'm|i am|i need to|i should|i have to|i will|my\b|me\b)\b/.test(sentence)
-        if (!isFirstPerson) return change
-
-        return {
-          ...change,
-          target_file: writerFile || null,
-          target_section: WRITER_ACTIONS_SECTION,
-          module: writerFile ? 'people' : change?.module,
+        // Decisions on people files are always wrong — suppress them entirely.
+        // The intent is already captured by a follow-up on that person.
+        if (marker === 'decision') {
+          const target = String(change?.target_file || '')
+          if (target.startsWith('people/')) return []
+          return [change]
         }
+
+        // Skip if already routed to a specific file
+        if (change?.target_file) return [change]
+        // Unrouted tasks → vault owner's My Actions (if owner file is set)
+        if (!writerFile) return [change]
+        return [{
+          ...change,
+          marker: 'action',
+          target_file: writerFile,
+          target_section: WRITER_ACTIONS_SECTION,
+          module: 'people',
+        }]
       })
 
       const normalisedChanges = taskChanges
@@ -1439,7 +1587,12 @@ export function useNoteProcessor() {
         }
 
         const normalizedModule = moduleDef?.id || String(change.module || '').trim().toLowerCase() || 'other'
-        const normalizedSection = forceMyActions
+        // ideas/backlog.md is a special aggregate file — always preserve its ## Backlog section
+        // and don't let resolveTargetSection remap it to ## Developing (the per-idea-file rule).
+        const isBacklogTarget = String(change.target_file || '').toLowerCase() === 'ideas/backlog.md'
+        const normalizedSection = isBacklogTarget && normalizedMarker === 'idea'
+          ? '## Backlog'
+          : forceMyActions
           ? WRITER_ACTIONS_SECTION
           : (moduleDef?.id === 'projects'
             ? (normalizedMarker === 'decision'
@@ -1518,7 +1671,10 @@ export function useNoteProcessor() {
             && normalizeMarker(change?.marker) === 'action'
             && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
           const isUnattachedModuleAction = !change?.target_file && String(change?.module || '') === 'unattached'
-          if (isUnassignedWriterAction || isUnattachedModuleAction) return true
+          // ideas/backlog.md is always valid even if not in the scanned vault tree
+          const isIdeaBacklog = String(change?.target_file || '').toLowerCase() === 'ideas/backlog.md'
+            && normalizeMarker(change?.marker) === 'idea'
+          if (isUnassignedWriterAction || isUnattachedModuleAction || isIdeaBacklog) return true
           return validFiles.has(change.target_file) || pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
         })
       }

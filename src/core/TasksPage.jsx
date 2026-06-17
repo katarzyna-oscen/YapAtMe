@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry, notifyTasksIndexChanged, archiveDoneTasks } from '../lib/tasksIndex'
 import { addTaskComment } from '../lib/taskMarker'
 

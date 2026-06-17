@@ -420,12 +420,58 @@ function FolderScreen({ s, act, openFolder, fileExists, listTree }) {
   )
 }
 
+const MODEL_OPTIONS = {
+  openrouter: [
+    { value: 'anthropic/claude-3.5-sonnet',          label: 'Claude 3.5 Sonnet' },
+    { value: 'anthropic/claude-3-haiku',             label: 'Claude 3 Haiku (fast)' },
+    { value: 'openai/gpt-4o',                        label: 'GPT-4o' },
+    { value: 'openai/gpt-4o-mini',                   label: 'GPT-4o mini (fast)' },
+    { value: 'meta-llama/llama-3.3-70b-instruct',    label: 'Llama 3.3 70B' },
+    { value: 'google/gemini-2.0-flash-001',          label: 'Gemini 2.0 Flash' },
+    { value: 'google/gemma-4-31b-it',                label: 'Gemma 4 31B' },
+    { value: '__custom__',                           label: 'Other (enter model ID…)' },
+  ],
+  anthropic: [
+    { value: 'claude-sonnet-4-5',        label: 'Claude Sonnet 4.5' },
+    { value: 'claude-3-5-haiku-latest',  label: 'Claude 3.5 Haiku (fast)' },
+    { value: 'claude-3-opus-latest',     label: 'Claude 3 Opus' },
+    { value: '__custom__',               label: 'Other (enter model ID…)' },
+  ],
+  openai: [
+    { value: 'gpt-4o',       label: 'GPT-4o' },
+    { value: 'gpt-4o-mini',  label: 'GPT-4o mini (fast)' },
+    { value: 'gpt-4-turbo',  label: 'GPT-4 Turbo' },
+    { value: '__custom__',   label: 'Other (enter model ID…)' },
+  ],
+  ollama: [
+    { value: 'llama3.2',  label: 'Llama 3.2' },
+    { value: 'llama3.1',  label: 'Llama 3.1' },
+    { value: 'mistral',   label: 'Mistral' },
+    { value: 'phi4',      label: 'Phi-4' },
+    { value: '__custom__', label: 'Other (enter model ID…)' },
+  ],
+}
+
 function AiScreen({ s, act }) {
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState(null)
   const key = s.apiKey.trim()
   const providerDef = PROVIDERS[s.provider] || PROVIDERS.openrouter
   const needsKey = providerDef.needsKey !== false
+
+  const modelOptions = MODEL_OPTIONS[s.provider] || MODEL_OPTIONS.openrouter
+  const isCustom = !modelOptions.some(o => o.value !== '__custom__' && o.value === s.model)
+  const selectValue = isCustom ? '__custom__' : s.model
+  const model = s.model || providerDef.model
+
+  const handleSelectModel = v => {
+    if (v === '__custom__') {
+      act.setModel('')
+    } else {
+      act.setModel(v)
+    }
+    if (error) setError(null)
+  }
 
   const submit = async () => {
     if (testing) return
@@ -434,10 +480,14 @@ function AiScreen({ s, act }) {
       setError('That key looks too short. Paste the full key from your provider.')
       return
     }
+    if (!model.trim()) {
+      setError('Enter a model name.')
+      return
+    }
     if (!needsKey) { act.next(); return }
     setTesting(true)
     try {
-      await callLLM([{ role: 'user', content: 'Say "ok" in one word.' }], '', { provider: s.provider, apiKey: key, model: '' }, 5)
+      await callLLM([{ role: 'user', content: 'Say "ok" in one word.' }], '', { provider: s.provider, apiKey: key, model }, 5)
       act.next()
     } catch (err) {
       const msg = String(err?.message || '')
@@ -467,6 +517,16 @@ function AiScreen({ s, act }) {
               { value: 'openai',     label: 'OpenAI'     },
               { value: 'ollama',     label: 'Ollama (local)' },
             ]} />
+        </div>
+        <div>
+          <FieldLabel>Model</FieldLabel>
+          <SelectField value={selectValue} onChange={handleSelectModel} options={modelOptions} />
+          {isCustom && (
+            <div style={{ marginTop: 8 }}>
+              <TextField value={s.model} onChange={v => { act.setModel(v); if (error) setError(null) }}
+                placeholder={providerDef.model || 'e.g. my-model-id'} mono autoFocus />
+            </div>
+          )}
         </div>
         {needsKey && (
           <div>
@@ -670,23 +730,26 @@ function ReadyScreen({ s, act }) {
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────────────
-const STEP_BASE = ['welcome', 'name', 'folder', 'ai', 'modules']
-function stepsFor(path) {
-  if (path === 'pro') return [...STEP_BASE, 'ready']
-  return [...STEP_BASE, 'seed', 'ready']
-}
-
-export default function OnboardingFlow({ openFolder, fileExists, listTree, onComplete }) {
-  const [step, setStep] = useState('welcome')
+export default function OnboardingFlow({ openFolder, fileExists, listTree, initialFolder, onComplete }) {
+  const [step, setStep] = useState(initialFolder ? 'name' : 'welcome')
   const [s, setS] = useState({
-    path: null, name: '', folder: null,
-    provider: 'openrouter', apiKey: '',
+    path: initialFolder ? 'pro' : null, name: '',
+    folder: initialFolder ? { state: 'A', name: initialFolder.name } : null,
+    provider: 'openrouter', apiKey: '', model: PROVIDERS.openrouter.model,
     modules: { people: true, projects: true, ideas: true },
     seedPeople:   [{ name: '', role: '' }, { name: '', role: '' }],
     seedProjects: [{ name: '' }, { name: '' }],
     seeded: false,
   })
   const patch = p => setS(prev => ({ ...prev, ...p }))
+
+  const STEP_BASE = initialFolder
+    ? ['name', 'ai', 'modules']
+    : ['welcome', 'name', 'folder', 'ai', 'modules']
+  const stepsFor = path => {
+    if (path === 'pro') return [...STEP_BASE, 'ready']
+    return [...STEP_BASE, 'seed', 'ready']
+  }
 
   const order = stepsFor(s.path)
   const idx   = Math.max(0, order.indexOf(step))
@@ -709,8 +772,9 @@ export default function OnboardingFlow({ openFolder, fileExists, listTree, onCom
     setName: name => patch({ name }),
     setFolder: folder => patch({ folder }),
     connectExisting: () => { patch({ folder: { ...s.folder, state: 'A' } }); setStep('ai') },
-    setProvider: provider => patch({ provider }),
+    setProvider: provider => patch({ provider, model: PROVIDERS[provider]?.model || '' }),
     setApiKey: apiKey => patch({ apiKey }),
+    setModel: model => patch({ model }),
     toggleModule: id => setS(prev => ({ ...prev, modules: { ...prev.modules, [id]: !prev.modules[id] } })),
     addSeed: kind => setS(prev => {
       const key = kind === 'people' ? 'seedPeople' : 'seedProjects'

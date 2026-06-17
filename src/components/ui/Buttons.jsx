@@ -36,7 +36,7 @@ export function PrimaryButton({ children, onClick, type = 'button', disabled, lo
   )
 }
 
-export function SecondaryButton({ children, onClick, danger, disabled }) {
+export function SecondaryButton({ children, onClick, danger, success, disabled }) {
   const [hov, setHov] = useState(false)
   return (
     <button
@@ -49,13 +49,19 @@ export function SecondaryButton({ children, onClick, danger, disabled }) {
         padding: '9px 16px',
         background: danger
           ? (hov ? 'oklch(0.70 0.18 22 / 0.16)' : 'transparent')
+          : success
+          ? (hov ? 'oklch(0.74 0.14 165 / 0.22)' : 'oklch(0.74 0.14 165 / 0.12)')
           : (hov ? 'var(--panel-2)' : 'var(--panel)'),
         color: danger
           ? (hov ? 'oklch(0.88 0.16 22)' : 'oklch(0.78 0.16 22)')
+          : success
+          ? (hov ? 'oklch(0.90 0.14 165)' : 'oklch(0.80 0.14 165)')
           : (hov ? 'var(--text)' : 'var(--text-dim)'),
         border: `1px solid ${
           danger
             ? (hov ? 'oklch(0.70 0.18 22 / 0.55)' : 'oklch(0.70 0.18 22 / 0.30)')
+            : success
+            ? (hov ? 'oklch(0.74 0.14 165 / 0.65)' : 'oklch(0.74 0.14 165 / 0.40)')
             : (hov ? 'var(--border-strong)' : 'var(--border)')
         }`,
         borderRadius: 8,

@@ -4,7 +4,6 @@ import { migrateEntityTasks } from '../lib/migrateEntityTasks'
 import { cleanEntityFiles } from '../lib/cleanEntityFiles'
 import { callLLM, PROVIDERS } from '../lib/llm'
 import { PrimaryButton, SecondaryButton } from '../components/ui/Buttons'
-import { ensureWriterActionsSection } from '../lib/templates'
 import {
   readTasksIndex,
   countActiveTasksForModule,
@@ -367,7 +366,6 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
     enabledModules: settings.enabledModules || DEFAULT_ENABLED_MODULES,
     dashboardSections: settings.dashboardSections || {},
   })
-  const [peopleWriterOptions, setPeopleWriterOptions] = useState([])
   const [saved, setSaved] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
   const [rebuildStatus, setRebuildStatus] = useState(null)
@@ -393,45 +391,6 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
       dashboardSections: settings.dashboardSections || {},
     })
   }, [settings])
-
-  useEffect(() => {
-    let cancelled = false
-    const loadPeopleOptions = async () => {
-      try {
-        const tree = await listTree()
-        const peopleDir = Array.isArray(tree)
-          ? (tree.find((entry) => entry?.kind === 'directory' && entry.name === 'people')?.children || [])
-          : (tree?.people || [])
-        const options = (peopleDir || [])
-          .filter((entry) => entry?.kind === 'file' && String(entry.name || '').endsWith('.md'))
-          .map((entry) => {
-            const path = entry.path || `people/${entry.name}`
-            const label = String(entry.name || '').replace(/\.md$/i, '').replace(/-/g, ' ')
-            return { value: path, label }
-          })
-          .sort((a, b) => a.label.localeCompare(b.label))
-        if (!cancelled) setPeopleWriterOptions(options)
-      } catch {
-        if (!cancelled) setPeopleWriterOptions([])
-      }
-    }
-    loadPeopleOptions()
-    return () => { cancelled = true }
-  }, [listTree])
-
-  const ensureWriterSectionIfNeeded = async (writerFile) => {
-    const target = String(writerFile || '').trim()
-    if (!target) return
-    try {
-      const raw = await readFile(target)
-      const next = ensureWriterActionsSection(raw)
-      if (next !== raw) {
-        await writeFile(target, next)
-      }
-    } catch (err) {
-      console.warn('Failed to ensure writer actions section:', err?.message || err)
-    }
-  }
 
   const handleSave = async () => {
     await saveSettings(form)
@@ -634,91 +593,47 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
               </h1>
 
               <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, color: 'var(--text-dim)', maxWidth: 640 }}>
-                Tell YapAtMe who you are so it can route first-person actions to your file and personalise note processing.
+                Your identity is set during onboarding. YapAtMe uses it to route first-person actions to your file.
               </p>
 
               {form.writerFile ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 14,
+                  padding: '14px 16px',
+                  background: 'var(--panel-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                }}>
                   <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 14,
-                    padding: '14px 16px',
-                    background: 'var(--panel-2)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 10,
+                    width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                    background: 'oklch(0.70 0.18 22 / 0.16)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 17, fontWeight: 600, color: 'oklch(0.84 0.16 22)',
                   }}>
-                    <div style={{
-                      width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-                      background: 'oklch(0.70 0.18 22 / 0.16)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 17, fontWeight: 600, color: 'oklch(0.84 0.16 22)',
-                    }}>
-                      {(peopleWriterOptions.find(o => o.value === form.writerFile)?.label || form.writerFile)
-                        .charAt(0).toUpperCase()}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
-                        {peopleWriterOptions.find(o => o.value === form.writerFile)?.label ||
-                          form.writerFile.replace('people/', '').replace('.md', '').replace(/-/g, ' ')}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-very-dim)', marginTop: 1 }}>
-                        {form.writerFile}
-                      </div>
-                    </div>
+                    {form.writerFile.replace('people/', '').replace('.md', '').replace(/-/g, ' ').charAt(0).toUpperCase()}
                   </div>
-                  <div className="space-y-2">
-                    <FieldLabel>Change identity</FieldLabel>
-                    <StyledSelect
-                      value={form.writerFile || ''}
-                      onChange={async (value) => {
-                        const nextForm = { ...form, writerFile: value }
-                        setForm(nextForm)
-                        await saveSettings(nextForm)
-                        await ensureWriterSectionIfNeeded(value)
-                      }}
-                      options={[
-                        { value: '', label: 'Not set' },
-                        ...peopleWriterOptions,
-                      ]}
-                    />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
+                      {form.writerFile.replace('people/', '').replace('.md', '').replace(/-/g, ' ')}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-very-dim)', marginTop: 1 }}>
+                      {form.writerFile}
+                    </div>
                   </div>
                 </div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  <div style={{
-                    padding: '14px 16px',
-                    background: 'oklch(0.90 0.12 80 / 0.06)',
-                    border: '1px solid oklch(0.90 0.12 80 / 0.20)',
-                    borderRadius: 10,
-                    fontSize: 13.5,
-                    color: 'var(--text-dim)',
-                    lineHeight: 1.5,
-                  }}>
-                    Set your name so YapAtMe knows who you are
-                  </div>
-                  <div className="space-y-2">
-                    <FieldLabel>Select your person file</FieldLabel>
-                    {peopleWriterOptions.length === 0 ? (
-                      <p style={{ fontSize: 13, color: 'var(--text-very-dim)', margin: 0 }}>
-                        No people files found. Create a person entry first.
-                      </p>
-                    ) : (
-                      <StyledSelect
-                        value={form.writerFile || ''}
-                        onChange={async (value) => {
-                          const nextForm = { ...form, writerFile: value }
-                          setForm(nextForm)
-                          await saveSettings(nextForm)
-                          await ensureWriterSectionIfNeeded(value)
-                        }}
-                        options={[
-                          { value: '', label: 'Choose your name…' },
-                          ...peopleWriterOptions,
-                        ]}
-                      />
-                    )}
-                  </div>
+                <div style={{
+                  padding: '14px 16px',
+                  background: 'oklch(0.90 0.12 80 / 0.06)',
+                  border: '1px solid oklch(0.90 0.12 80 / 0.20)',
+                  borderRadius: 10,
+                  fontSize: 13.5,
+                  color: 'var(--text-dim)',
+                  lineHeight: 1.5,
+                }}>
+                  No vault owner set. Re-run onboarding to set your identity.
                 </div>
               )}
             </div>
@@ -911,6 +826,23 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                   danger
                 >
                   {cleaning ? 'Cleaning…' : 'Clean entity files'}
+                </SecondaryButton>
+              </ActionCard>
+
+              <ActionCard
+                title="Set up a new vault"
+                description="Opens the onboarding flow so you can connect a different folder or start fresh. Your current vault files are not deleted."
+              >
+                <SecondaryButton
+                  success
+                  onClick={async () => {
+                    await import('../lib/db').then(({ dbPut }) =>
+                      dbPut('settings', 'onboardingComplete', false)
+                    ).catch(() => {})
+                    window.location.reload()
+                  }}
+                >
+                  Start onboarding
                 </SecondaryButton>
               </ActionCard>
             </div>

@@ -25,9 +25,9 @@ export function daysAgo(dateStr) {
 function normalizeFiles(tree, folder) {
   if (Array.isArray(tree)) {
     const dir = tree.find(e => e?.kind === 'directory' && e.name === folder)
-    return (dir?.children || []).filter(e => e?.kind === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
+    return (dir?.children || []).filter(e => e?.kind === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && !(folder === 'ideas' && e.name === 'backlog.md'))
   }
-  return (tree?.[folder] || []).filter(e => e.name?.endsWith('.md') && !e.name.startsWith('_'))
+  return (tree?.[folder] || []).filter(e => e.name?.endsWith('.md') && !e.name.startsWith('_') && !(folder === 'ideas' && e.name === 'backlog.md'))
 }
 
 async function readFrontmatters(readFile, files, folder) {
@@ -200,8 +200,11 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
 
       const peopleList = rawPeople.map(({ path, fields, raw }) => {
         const safeFields = fields || {}
+        const isOwner = (safeFields.relationship || '').toLowerCase() === 'me'
         const mentionDates = parseMentionDates(raw)
-        const closeness = calculateCloseness(path, allTasks, mentionDates)
+        const closeness = isOwner
+          ? { label: '★ me', bars: 5, tier: 'bestie' }
+          : calculateCloseness(path, allTasks, mentionDates)
         const lastMentionDate = mentionDates.length
           ? mentionDates.reduce((a, b) => (a > b ? a : b))
           : null

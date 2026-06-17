@@ -10,6 +10,7 @@ import { readTasksIndex, resolveTaskEntry, disconnectTasksForFile, archiveTasksF
 import { invalidateFileIndex } from '../lib/fileIndex'
 import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
 import ConfirmDialog from '../components/ConfirmDialog'
+import EntityPicker from '../components/EntityPicker'
 
 function PersonTaskActionModal({ open, mode, label, onCancel, onSelect }) {
   if (!open) return null
@@ -114,6 +115,23 @@ function formatUpdatedHeader(lastUpdated, lastSavedTime) {
   return `UPDATED ${formatted} · ${age}${lastSavedTime ? ` · saved ${lastSavedTime}` : ''}`
 }
 
+// Strips sections rendered as custom UI from the Milkdown editor body.
+// Only ## Recent Mentions and ## Notes remain in the editor.
+const STRIPPED = /^##\s+(Summary|Related Projects|Talk About|Delegate|My Actions)\s*$/i
+const STRIPPED_OWNER = /^##\s+(Summary|Related Projects|Talk About|Delegate|My Actions|Recent Mentions)\s*$/i
+
+function stripEditorOnlySections(body, isOwner = false) {
+  const pattern = isOwner ? STRIPPED_OWNER : STRIPPED
+  const lines = body.split('\n')
+  const result = []
+  let skipping = false
+  for (const line of lines) {
+    if (/^##\s+/.test(line)) skipping = pattern.test(line.trim())
+    if (!skipping) result.push(line)
+  }
+  return result.join('\n').replace(/\n{3,}/g, '\n\n').trimStart()
+}
+
 function DictateBtn({ active, disabled, onClick }) {
   const [hover, setHover] = useState(false)
 
@@ -180,6 +198,7 @@ export default function PersonViewer({
   const [fullName, setFullName] = useState('')
   const [relationship, setRelationship] = useState('')
   const [role, setRole] = useState('')
+  const [relatedProjects, setRelatedProjects] = useState('')
   const [lastUpdated, setLastUpdated] = useState('')
   const [editorBody, setEditorBody] = useState('')
   const [tasks, setTasks] = useState([])
@@ -228,8 +247,31 @@ export default function PersonViewer({
       setFullName(fields?.full_name || '')
       setRelationship(fields?.relationship || '')
       setRole(fields?.role || '')
+
+      // Prefer frontmatter; fall back to parsing ## Related Projects from body
+      const rawRel = fields?.related_projects
+      let relText = ''
+      if (rawRel && (Array.isArray(rawRel) ? rawRel.length > 0 : rawRel.trim())) {
+        relText = Array.isArray(rawRel)
+          ? rawRel.filter(Boolean).map((s) => `[[${String(s).replace(/^\[+|\]+$/g, '').trim()}]]`).join('\n')
+          : rawRel
+      } else {
+        // Extract [[links]] from ## Related Projects section in body
+        const relMatch = (body || '').match(/##\s+Related Projects\s*\n([\s\S]*?)(?=\n##\s|$)/i)
+        if (relMatch) {
+          relText = relMatch[1]
+            .split('\n')
+            .map((l) => l.trim().replace(/^-\s*/, ''))
+            .filter((l) => l.startsWith('[['))
+            .join('\n')
+        }
+      }
+      setRelatedProjects(relText)
+
       setLastUpdated(fields?.last_updated || '')
-      const trimmedBody = (body || '').trimStart()
+      // Strip task/meta sections from body; also strip Recent Mentions for vault owner
+      const isOwner = filePath === settings?.writerFile
+      const trimmedBody = stripEditorOnlySections((body || '').trimStart(), isOwner)
       setEditorBody(trimmedBody)
     } catch {
       setFullName('')
@@ -265,11 +307,18 @@ export default function PersonViewer({
 
     setSaveStatus('saving')
     const today = new Date().toISOString().slice(0, 10)
+    // Store related projects as a clean array of bare names so YAML round-trips
+    // correctly. Storing the raw "[[name]]" string makes the frontmatter parser
+    // misread the leading "[" as an array and corrupt the value on reload.
+    const relatedArr = (relatedProjects.match(/\[\[([^\]]+)\]\]/g) || [])
+      .map((m) => m.slice(2, -2).trim())
+      .filter(Boolean)
     const fields = {
       type: 'person',
       full_name: fullName.trim() || 'Untitled',
       relationship,
       role,
+      related_projects: relatedArr.length ? relatedArr : null,
       last_updated: today,
     }
     const full = buildFileContent(fields, body)
@@ -289,7 +338,7 @@ export default function PersonViewer({
     } catch {
       setSaveStatus('error')
     }
-  }, [filePath, writeFile, fullName, relationship, role])
+  }, [filePath, writeFile, fullName, relationship, role, relatedProjects])
 
   const queueSave = (body) => {
     clearTimeout(saveTimer.current)
@@ -308,7 +357,7 @@ export default function PersonViewer({
     if (!filePath || loading) return
     setSaveStatus('idle')
     queueSave(editorBody)
-  }, [fullName, relationship, role])
+  }, [fullName, relationship, role, relatedProjects])
 
   const handleDictate = () => {
     if (isListening) {
@@ -505,6 +554,7 @@ export default function PersonViewer({
             disabled={!isSupported}
             onClick={handleDictate}
           />
+          {filePath !== settings?.writerFile ? (
           <TrashMenuButton
             label={fileLabel}
             onConfirmAction={onConfirmAction}
@@ -525,6 +575,7 @@ export default function PersonViewer({
               danger: true,
             })}
           />
+          ) : null}
         </div>
       </header>
 
@@ -665,14 +716,29 @@ export default function PersonViewer({
             )}
           </div>
 
+          {/* Related Projects widget — top of canvas, before task sections */}
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', color: 'var(--text-very-dim)', textTransform: 'uppercase', marginBottom: 10 }}>
+              Related Projects
+            </div>
+            <EntityPicker
+              entities={(relatedProjects.match(/\[\[([^\]]+)\]\]/g) || []).map((m) => m.slice(2, -2))}
+              onChange={(arr) => setRelatedProjects(arr.map((n) => `[[${n}]]`).join('\n'))}
+              suggestions={wikilinkSuggestions}
+              filterType="project"
+              onNavigate={(name) => handleWikilinkClick(name)}
+              placeholder="Add related project"
+            />
+          </div>
+
           <TaskPanel
             tasks={tasks}
-            sections={['## Delegate', '## Talk About', '## My Actions']}
+            sections={['## Talk About', '## Delegate', '## My Actions']}
             onResolve={handleResolveTask}
             onWikilinkClick={handleWikilinkClick}
           />
 
-          {/* Milkdown body — remounts when filePath changes */}
+          {/* Milkdown body — Recent Mentions + Notes only */}
           <div key={filePath} className="milkdown-wrapper">
             <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={handleWikilinkClick} wikilinkSuggestions={wikilinkSuggestions ?? []} />
           </div>
