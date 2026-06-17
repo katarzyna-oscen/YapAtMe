@@ -80,6 +80,14 @@ function indexEntryToTask(entry) {
     inferredCategory = 'talk-about'
   }
 
+  // Promote urgent/important tasks from other categories to needs-call so they surface
+  // prominently in the TasksPage view, matching the CommandPage behavior.
+  if (Array.isArray(entry.tags) && entry.tags.some((tag) => ['urgent', 'important', 'priority'].includes(String(tag).toLowerCase()))) {
+    if (['actions', 'talk-about'].includes(inferredCategory)) {
+      inferredCategory = 'needs-call'
+    }
+  }
+
   return {
     id: entry.id,
     text: normalizeTaskDisplayText(entry.title),
