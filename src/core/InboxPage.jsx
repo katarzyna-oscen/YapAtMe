@@ -776,6 +776,12 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
 
     // Resolve writerFile: use settings value, or fall back to any people/*.md with relationship: Me
     let resolvedWriterFile = settings?.writerFile || ''
+    // Ignore a writerFile that doesn't exist in THIS vault (e.g. a stale owner
+    // carried over from a previously opened vault) so the relationship: Me scan
+    // below can resolve the current vault's owner instead.
+    if (resolvedWriterFile && !allowedFiles.includes(resolvedWriterFile)) {
+      resolvedWriterFile = ''
+    }
     if (!resolvedWriterFile && settings?.enabledModules?.people !== false) {
       const peoplePaths = allowedFiles.filter(p => p.startsWith('people/') && p.endsWith('.md'))
       for (const p of peoplePaths) {
@@ -830,10 +836,26 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
         changesCount: llmResult?.changes?.length,
       })
 
+      // Shape-based mention detection — the model sometimes emits a Recent
+      // Mentions log entry but mislabels it as an action routed to ## Open
+      // Actions. The content SHAPE is the reliable signal, not the marker:
+      //   - title is literally "mention", OR
+      //   - content begins with a dated log line "[[DD-MM-YYYY]] — ..." / "DD-MM-YYYY — ..."
+      // Tasks are imperative and never carry this dated-narrative shape.
+      const isMentionShaped = (change) => {
+        const title = String(change?.title || '').trim().toLowerCase()
+        if (title === 'mention') return true
+        const content = String(change?.content || '').trim()
+        return /^-?\s*\[{0,2}\d{1,2}-\d{1,2}-\d{4}\]{0,2}\s*[—–-]\s+/.test(content)
+      }
+
       const isTaskLikeChange = (change) => {
         const marker = String(change?.marker || '').toLowerCase()
         // mention marker is always a mention — never treat it as a task regardless of content
         if (marker === 'mention') return false
+        // mention-SHAPED content is always a mention even if the model labelled
+        // it action/follow-up and routed it to a task section
+        if (isMentionShaped(change)) return false
         const content = String(change?.content || '')
         const text = `${change?.title || ''} ${content}`.toLowerCase()
         if (/^-\s*\[[ x]\]/i.test(content)) return true
@@ -841,11 +863,22 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
         return /\b(todo|task|action item|next step|follow up|check in|delegate)\b/.test(text)
       }
 
-      const llmMentionChanges = (llmResult?.changes || []).filter((change) => {
-        const marker = String(change?.marker || '').toLowerCase()
-        const section = String(change?.target_section || '').toLowerCase()
-        return (marker === 'mention' || section.includes('recent mentions')) && !isTaskLikeChange(change)
-      })
+      const llmMentionChanges = (llmResult?.changes || [])
+        .filter((change) => {
+          const marker = String(change?.marker || '').toLowerCase()
+          const section = String(change?.target_section || '').toLowerCase()
+          return (marker === 'mention' || section.includes('recent mentions') || isMentionShaped(change)) && !isTaskLikeChange(change)
+        })
+        .map((change) => {
+          // Force mislabelled mentions back to the Recent Mentions section so
+          // applyChange logs them correctly instead of writing a task entry.
+          const marker = String(change?.marker || '').toLowerCase()
+          const section = String(change?.target_section || '').toLowerCase()
+          if (marker !== 'mention' || !section.includes('recent mentions')) {
+            return { ...change, marker: 'mention', target_section: '## Recent Mentions' }
+          }
+          return change
+        })
 
       const autoMentionChanges = dedupeRoutingChanges([
         ...llmMentionChanges,
@@ -873,7 +906,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
             // Decisions on people files are invalid — suppress from review queue
             if (marker === 'decision' && String(change?.target_file || '').startsWith('people/')) return false
             if (isTaskLikeChange(change)) return true
-            return !(marker === 'mention' || section.includes('recent mentions'))
+            return !(marker === 'mention' || section.includes('recent mentions') || isMentionShaped(change))
           }),
         ]),
       }

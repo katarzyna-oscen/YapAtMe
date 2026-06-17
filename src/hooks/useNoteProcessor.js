@@ -164,6 +164,10 @@ ${allowedFiles.length ? allowedFiles.join('\n') : '(none)'}
 Rules:
 - Extract every actionable item AND every idea/concept from the note — do not skip any sentence.
 - Generate task changes for ALL actionable sentences, regardless of whether the mentioned person or entity exists in the vault or has a file in the allowed list.
+- Narrative recaps are NOT tasks. A sentence that reports something that already happened (past tense: "presented", "shouted", "informed me", "showed", "was furious", "created") is a MENTION, not an action. Do NOT emit a task/action change for it — leave it to the mention pass. Only emit a task when there is a concrete FUTURE action someone still has to do.
+  Example: "Gloria presented the campaign materials to Mark and he was furious" → NO task (pure recap). The follow-up "Diana has to present the new T-shirt" → one follow-up on Diana.
+  IMPORTANT: the recap rule does NOT apply to ideas. A hypothetical or proposal ("what if we built…", "we could build…", "idea: …") is an IDEA, not a recap — always emit an idea change for it even though it may use a past-tense verb like "built".
+- Never route a past-tense recap to the vault owner's actions. "target_file: null → vault owner" applies ONLY to genuine future actions with no identifiable owner, never to recaps.
 - One task per actionable item. Never duplicate the same task across multiple people.
 - Each task has exactly one owner — the person who must act or decide.
   Do not fan out one task to every person mentioned in a sentence.
@@ -221,6 +225,11 @@ Rules:
     "module": "unattached"
   }
   (Reason: pure first-person self-action with no other person to discuss with → action on null/owner.)
+
+  Input: "Gloria presented the campaign materials to Mark and he was furious about the visuals Isaac created."
+  Output:
+  { "changes": [] }
+  (Reason: this is a past-tense recap of what already happened — no future action for anyone. The mention pass records it; the task pass emits nothing. Do NOT route this to the vault owner.)
 
   Input: "Been thinking about a voice shortcut that drops a note directly into inbox."
   Output:
@@ -425,6 +434,18 @@ function extractEntityCandidates(noteContent) {
       if (!buckets.has(key)) buckets.set(key, [])
       buckets.get(key).push(name)
     }
+  }
+
+  // 2c. Relative clauses: "that Isaac created", "which Diana prepared".
+  // This catches names that are not preceded by the context triggers above.
+  const RELATIVE_RE = /\b(?:that|which|who)\s+([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})\s+(?:created|made|built|designed|prepared|presented|informed|shared|sent|wrote|drafted|reviewed|approved|updated|changed|did)\b/gu
+  for (const match of text.matchAll(RELATIVE_RE)) {
+    const candidate = match[1].trim()
+    if (!candidate || candidate.length < 2) continue
+    if (STOP_WORDS.has(candidate.toLowerCase())) continue
+    const key = candidate.toLowerCase()
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(candidate)
   }
 
   // 3. Extract names from possessive form (e.g. "Diana's decision", "Paweł's report")
@@ -916,9 +937,100 @@ function splitIntoSentences(text) {
     .match(/[^.!?\n]+[.!?]?/g)?.map((s) => s.trim()).filter(Boolean) || []
 }
 
+// Drop markdown heading lines (e.g. the note's "# 17-06-2026" date title) so they
+// don't get collapsed into the first sentence by splitIntoSentences and pollute
+// deterministic titles / token-overlap checks.
+function stripHeadingLines(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => !/^\s*#{1,6}\s/.test(line))
+    .join('\n')
+}
+
+// Deterministic urgency detection. Urgent / important / critical sentences are
+// an INSTANT trigger — they must always produce an action, never depend on the
+// LLM noticing them. We only fire on sentences that also carry an action signal
+// (first-person intent or an imperative) so we don't flag past-tense recaps.
+const URGENCY_URGENT_RE = /\b(urgent(?:ly)?|asap|immediately|critical|blocker|emergency|right\s+away)\b/i
+const URGENCY_IMPORTANT_RE = /\b(important|high[\s-]?priority|top[\s-]?priority|priority|crucial|vital)\b/i
+const URGENCY_ACTION_SIGNAL_RE = /\b(i\s+(?:need|have|must|should|want|got|gotta)\s+to|i'?ll|i\s+will|need\s+to|needs\s+to|have\s+to|has\s+to|must\b|should\b|todo|to\s+do|remember\s+to|don'?t\s+forget|make\s+sure|ensure)\b/i
+// Recap guard — a sentence that is purely reporting the past is not an action.
+const URGENCY_RECAP_RE = /\b(was|were|did|presented|showed|shouted|informed|told|created|made|sent|happened|reacted|complained)\b/i
+
+function buildUrgencyTitle(sentence) {
+  let t = normalizeNestedWikilinks(String(sentence || ''))
+  // Drop a trailing urgency clause: "... and it is urgent", "... (important)", "... - asap".
+  t = t.replace(/[,;:–-]?\s*(?:and|but|so|because)?\s*(?:it'?s|it\s+is|this\s+is|that'?s|they'?re|it\s+was)?\s*(?:very\s+|really\s+|super\s+|quite\s+|extremely\s+)?(?:urgent(?:ly)?|important|high[\s-]?priority|top[\s-]?priority|priority|critical|crucial|vital|asap|a\s+blocker|an?\s+emergency)\b[.!?]?\s*$/i, '').trim()
+  // Strip a leading first-person modal so the title is a clean imperative.
+  t = t.replace(/^\s*(?:i\s+(?:need|have|must|should|want|got|gotta)\s+to\s+|i'?ll\s+|i\s+will\s+|need\s+to\s+|have\s+to\s+|must\s+|should\s+|remember\s+to\s+|make\s+sure\s+(?:to\s+)?|ensure\s+(?:to\s+)?)/i, '').trim()
+  t = t.replace(/[.!?]+$/, '').trim()
+  return t.replace(/^(.)/, (ch) => String(ch || '').toUpperCase())
+}
+
+function detectUrgencyActions(noteContent) {
+  const out = []
+  for (const raw of splitIntoSentences(stripHeadingLines(noteContent))) {
+    const sentence = String(raw || '').trim()
+    if (!sentence) continue
+    const isUrgent = URGENCY_URGENT_RE.test(sentence)
+    const isImportant = !isUrgent && URGENCY_IMPORTANT_RE.test(sentence)
+    if (!isUrgent && !isImportant) continue
+    // Require an action signal and reject pure past-tense recaps.
+    if (!URGENCY_ACTION_SIGNAL_RE.test(sentence)) continue
+    if (URGENCY_RECAP_RE.test(sentence) && !URGENCY_ACTION_SIGNAL_RE.test(sentence)) continue
+    const title = buildUrgencyTitle(sentence)
+    if (!title || title.length < 2) continue
+    out.push({ sentence, title, marker: isUrgent ? 'urgent' : 'important' })
+  }
+  return out
+}
+
+// Deterministic idea detection. Proposal / exploration sentences are an instant
+// trigger for an idea — they must always reach ideas/backlog.md even if the LLM
+// skipped them (e.g. it mistook the subjunctive "what if we built" for a recap).
+// "Intro" signals introduce a new idea; "support" signals (e.g. "could be huge")
+// are evaluative reactions that merely back an idea — they never spawn their own.
+const IDEA_INTRO_RE = /\b(what\s+if|how\s+about|idea:|thinking\s+about|been\s+thinking|want\s+to\s+(?:explore|try|build)|we\s+could\s+(?:build|make|create|try)|maybe\s+we\s+(?:could|should)|imagine\s+(?:if|a)|wouldn'?t\s+it\s+be)\b/i
+const IDEA_SUPPORT_RE = /\bcould\s+be\s+(?:huge|cool|interesting|nice|useful|great)\b/i
+
+// Lead-in fragments stripped (repeatedly) from the head of an idea sentence so
+// the title is the bare concept rather than the framing.
+const IDEA_LEADIN_RE = /^\s*(?:also\s+|then\s+)?(?:had\s+a\s+thought:?\s*|i\s+had\s+an?\s+idea:?\s*|idea:\s*|thinking\s+about\s+|been\s+thinking\s+about\s+|what\s+if\s+(?:we\s+)?|how\s+about\s+(?:we\s+)?|maybe\s+we\s+(?:could|should)\s+|we\s+could\s+|imagine\s+(?:if\s+)?(?:we\s+)?|wouldn'?t\s+it\s+be\s+(?:great|cool|nice|useful)\s+(?:if\s+)?(?:we\s+)?)/i
+
+function buildIdeaTitle(sentence) {
+  let t = normalizeNestedWikilinks(String(sentence || ''))
+  // Strip leading idea lead-ins (may be chained, e.g. "Also had a thought: what if we …").
+  let prev
+  do {
+    prev = t
+    t = t.replace(IDEA_LEADIN_RE, '').trim()
+  } while (t !== prev && t.length > 0)
+  t = t.replace(/[.!?]+$/, '').trim()
+  // Cap to a tidy length.
+  const words = t.split(/\s+/)
+  if (words.length > 14) t = words.slice(0, 14).join(' ')
+  return t.replace(/^(.)/, (ch) => String(ch || '').toUpperCase())
+}
+
+function detectIdeas(noteContent) {
+  const out = []
+  for (const raw of splitIntoSentences(stripHeadingLines(noteContent))) {
+    const sentence = String(raw || '').trim()
+    if (!sentence) continue
+    // Only an intro signal spawns a new idea. A support-only sentence is an
+    // evaluative reaction to the preceding idea — skip it to avoid duplicates.
+    if (!IDEA_INTRO_RE.test(sentence)) continue
+    const title = buildIdeaTitle(sentence)
+    if (!title || title.length < 2) continue
+    out.push({ sentence, title })
+  }
+  return out
+}
+
 function escapeRegex(source) {
   return String(source || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
+
 
 function peoplePathToName(path) {
   const filename = String(path || '').split('/').pop() || ''
@@ -1391,7 +1503,12 @@ export function useNoteProcessor() {
       if (enabledModules?.ideas !== false && !promptAllowFiles.includes('ideas/backlog.md')) {
         promptAllowFiles = [...promptAllowFiles, 'ideas/backlog.md']
       }
-      const writerFile = enabledModules?.people !== false ? String(settings?.writerFile || '').trim() : ''
+      let writerFile = enabledModules?.people !== false ? String(settings?.writerFile || '').trim() : ''
+      // Guard against a stale writerFile carried over from a previously opened vault.
+      // If the configured owner file is not part of THIS vault's scanned files, drop
+      // it so deterministic actions fall back to an unattached ## Open Actions task
+      // instead of writing to a non-existent person file from another vault.
+      if (writerFile && !scopedAllowedFiles.includes(writerFile)) writerFile = ''
       if (writerFile && scopedAllowedFiles.includes(writerFile) && !promptAllowFiles.includes(writerFile)) {
         promptAllowFiles = [...promptAllowFiles, writerFile]
       }
@@ -1491,6 +1608,79 @@ export function useNoteProcessor() {
         }]
       })
 
+      // Deterministic urgency guarantee — urgent / important / critical actions
+      // MUST surface even if the LLM missed them. If an existing task already
+      // covers the sentence, upgrade its marker + tag; otherwise inject a fresh
+      // action routed to the vault owner's My Actions (or unattached if no owner).
+      const urgencyActions = detectUrgencyActions(linkedNoteContent)
+      for (const ua of urgencyActions) {
+        const titleTokens = extractContentTokens(ua.title)
+        const tag = ua.marker === 'urgent' ? '#urgent' : '#important'
+        const covered = taskChanges.find((c) => {
+          const existing = `${c?.title || ''} ${c?.content || ''}`
+          const existingLower = existing.toLowerCase()
+          if (existingLower.includes(ua.title.toLowerCase())) return true
+          if (titleTokens.length === 0) return false
+          const existingSet = new Set(extractContentTokens(existing))
+          const hits = titleTokens.filter((t) => existingSet.has(t)).length
+          return hits / titleTokens.length >= 0.6
+        })
+        if (covered) {
+          const coveredMarker = normalizeMarker(covered.marker)
+          if (['action', 'urgent', 'important'].includes(coveredMarker)) {
+            covered.marker = ua.marker
+          }
+          // ALWAYS ensure the urgency tag is present so the UI flags it, even when
+          // the existing marker can't be upgraded (e.g. follow-up / delegate / a
+          // project-routed action). The tag — not the marker — drives the urgent flag.
+          if (!/#urgent|#important/i.test(String(covered.content || ''))) {
+            covered.content = `${String(covered.content || '').trim()} ${tag}`.trim()
+          }
+          continue
+        }
+        taskChanges.push({
+          id: crypto.randomUUID?.() || `${Date.now()}-urgency-${taskChanges.length}`,
+          target_file: writerFile || null,
+          target_section: writerFile ? WRITER_ACTIONS_SECTION : '## Open Actions',
+          content: `${ua.title} ${tag}`.trim(),
+          marker: ua.marker,
+          title: ua.title,
+          module: writerFile ? 'people' : 'unattached',
+        })
+      }
+
+      // Deterministic idea guarantee — proposal / exploration sentences ("what if
+      // we built…", "could be huge…") MUST reach ideas/backlog.md even if the LLM
+      // skipped them. Only runs when the ideas module is enabled.
+      if (enabledModules?.ideas !== false) {
+        const ideaDateSlug = (String(noteFilename || '').split('/').pop() || '')
+          .replace(/\.md$/i, '').trim()
+          || new Date().toLocaleDateString('en-GB').replace(/\//g, '-')
+        const detectedIdeas = detectIdeas(linkedNoteContent)
+        for (const di of detectedIdeas) {
+          const titleTokens = extractContentTokens(di.title)
+          const alreadyCaptured = taskChanges.some((c) => {
+            if (normalizeMarker(c?.marker) !== 'idea') return false
+            const existing = `${c?.title || ''} ${c?.content || ''}`.toLowerCase()
+            if (existing.includes(di.title.toLowerCase())) return true
+            if (titleTokens.length === 0) return false
+            const existingSet = new Set(extractContentTokens(existing))
+            const hits = titleTokens.filter((t) => existingSet.has(t)).length
+            return hits / titleTokens.length >= 0.6
+          })
+          if (alreadyCaptured) continue
+          taskChanges.push({
+            id: crypto.randomUUID?.() || `${Date.now()}-idea-${taskChanges.length}`,
+            target_file: 'ideas/backlog.md',
+            target_section: '## Backlog',
+            content: `[[${ideaDateSlug}]] — ${di.title}`,
+            marker: 'idea',
+            title: di.title,
+            module: 'ideas',
+          })
+        }
+      }
+
       const normalisedChanges = taskChanges
       console.log('[Processor] after normalise', normalisedChanges)
 
@@ -1499,11 +1689,14 @@ export function useNoteProcessor() {
         ...taskChanges,
       ].filter((change) => {
         const target = String(change?.target_file || '')
-        const isUnassignedWriterAction = !target
-          && normalizeMarker(change?.marker) === 'action'
-          && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+        // Any change destined for the vault owner's My Actions section is always
+        // valid — we only ever route the owner's own actions there, and the
+        // deterministic urgency fallback may target it even if writerFile was not
+        // added to the prompt allow-list.
+        const isWriterAction = String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+          && (!target || target === String(writerFile || ''))
         const isUnattachedModuleAction = !target && String(change?.module || '') === 'unattached'
-        if (isUnassignedWriterAction || isUnattachedModuleAction) return true
+        if (isWriterAction || isUnattachedModuleAction) return true
         return promptAllowSet.has(target)
       })
 
@@ -1651,11 +1844,10 @@ export function useNoteProcessor() {
       if (scopedAllowedFiles.length > 0) {
         const validFiles = new Set(scopedAllowedFiles)
         const rejected = hydratedChanges.filter((change) => {
-          const isUnassignedWriterAction = !change?.target_file
-            && normalizeMarker(change?.marker) === 'action'
-            && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+          const isWriterAction = String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+            && (!change?.target_file || change.target_file === String(writerFile || ''))
           const isUnattachedModuleAction = !change?.target_file && String(change?.module || '') === 'unattached'
-          if (isUnassignedWriterAction || isUnattachedModuleAction) return false
+          if (isWriterAction || isUnattachedModuleAction) return false
           return !validFiles.has(change.target_file) && !pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
         })
 
@@ -1667,14 +1859,13 @@ export function useNoteProcessor() {
         }
 
         hydratedChanges = hydratedChanges.filter((change) => {
-          const isUnassignedWriterAction = !change?.target_file
-            && normalizeMarker(change?.marker) === 'action'
-            && String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+          const isWriterAction = String(change?.target_section || '').trim() === WRITER_ACTIONS_SECTION
+            && (!change?.target_file || change.target_file === String(writerFile || ''))
           const isUnattachedModuleAction = !change?.target_file && String(change?.module || '') === 'unattached'
           // ideas/backlog.md is always valid even if not in the scanned vault tree
           const isIdeaBacklog = String(change?.target_file || '').toLowerCase() === 'ideas/backlog.md'
             && normalizeMarker(change?.marker) === 'idea'
-          if (isUnassignedWriterAction || isUnattachedModuleAction || isIdeaBacklog) return true
+          if (isWriterAction || isUnattachedModuleAction || isIdeaBacklog) return true
           return validFiles.has(change.target_file) || pendingEntityPaths.has(String(change.target_file || '').toLowerCase())
         })
       }
