@@ -30,6 +30,52 @@ const CATEGORY_TO_SECTION = {
 }
 
 const CATEGORY_IDS = new Set(TASK_CATEGORIES.map((category) => category.id))
+const PRIORITY_TAGS = ['urgent', 'important', 'priority']
+
+function normalizeTags(tags) {
+  if (!Array.isArray(tags)) return []
+  const out = []
+  for (const tag of tags) {
+    const t = String(tag || '').trim().toLowerCase()
+    if (!t) continue
+    if (!out.includes(t)) out.push(t)
+  }
+  return out
+}
+
+function hasPriorityTag(tags) {
+  return normalizeTags(tags).some((tag) => PRIORITY_TAGS.includes(tag))
+}
+
+function withPriorityTag(tags, nextPriority) {
+  const base = normalizeTags(tags).filter((tag) => !PRIORITY_TAGS.includes(tag))
+  const next = String(nextPriority || '').trim().toLowerCase()
+  if (next === 'urgent' || next === 'important') base.push(next)
+  return base
+}
+
+function deriveTaskCategory({ status, category, section, tags }) {
+  let inferredCategory = status === 'done'
+    ? 'done'
+    : (CATEGORY_IDS.has(category) ? category : (SECTION_TO_CATEGORY[section] ?? 'actions'))
+
+  // Backward compatibility for old Talk About entries stored as needs-call.
+  if (inferredCategory === 'needs-call' && section === '## Talk About' && !hasPriorityTag(tags)) {
+    inferredCategory = 'talk-about'
+  }
+
+  // Prevent sticky needs-call on non-Talk-About sections when priority is removed.
+  if (inferredCategory === 'needs-call' && section !== '## Talk About' && !hasPriorityTag(tags)) {
+    inferredCategory = SECTION_TO_CATEGORY[section] ?? 'actions'
+  }
+
+  // Promote urgent/important tasks so they surface in Needs Your Call.
+  if (hasPriorityTag(tags) && ['actions', 'talk-about'].includes(inferredCategory)) {
+    inferredCategory = 'needs-call'
+  }
+
+  return inferredCategory
+}
 
 function inferTaskModule(task) {
   const file = String(task?.file || '')
@@ -58,35 +104,13 @@ function indexEntryToTask(entry) {
   // Plan steps live in the Plans view, not Tasks
   if (entry.section === '## Current Plan') return null
 
-  let inferredCategory = entry.status === 'done'
-    ? 'done'
-    : (CATEGORY_IDS.has(entry.category) ? entry.category : (SECTION_TO_CATEGORY[entry.section] ?? 'actions'))
-
-  // Backward compatibility for old Talk About entries stored as needs-call.
-  if (
-    inferredCategory === 'needs-call'
-    && entry.section === '## Talk About'
-    && !Array.isArray(entry.tags)
-  ) {
-    inferredCategory = 'talk-about'
-  }
-
-  if (
-    inferredCategory === 'needs-call'
-    && entry.section === '## Talk About'
-    && Array.isArray(entry.tags)
-    && !entry.tags.some((tag) => ['urgent', 'important', 'priority'].includes(String(tag).toLowerCase()))
-  ) {
-    inferredCategory = 'talk-about'
-  }
-
-  // Promote urgent/important tasks from other categories to needs-call so they surface
-  // prominently in the TasksPage view, matching the CommandPage behavior.
-  if (Array.isArray(entry.tags) && entry.tags.some((tag) => ['urgent', 'important', 'priority'].includes(String(tag).toLowerCase()))) {
-    if (['actions', 'talk-about'].includes(inferredCategory)) {
-      inferredCategory = 'needs-call'
-    }
-  }
+  const tags = normalizeTags(entry.tags)
+  const inferredCategory = deriveTaskCategory({
+    status: entry.status,
+    category: entry.category,
+    section: entry.section,
+    tags,
+  })
 
   return {
     id: entry.id,
@@ -96,6 +120,7 @@ function indexEntryToTask(entry) {
     section: entry.section,
     category: inferredCategory,
     prevCategory: entry.prevCategory ?? null,
+    tags,
     created: new Date(entry.last_updated ?? Date.now()),
     done: entry.status === 'done',
     comments: (entry.comments || []).map((comment) => ({ ...comment, ts: new Date(comment.ts) })),
@@ -248,6 +273,15 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
     setTasks((prev) => prev.map((item) => {
       if (item.id !== taskId) return item
 
+      const nextDone = typeof patch.status === 'string'
+        ? patch.status === 'done'
+        : item.done
+      const nextSection = (typeof patch.category === 'string' && CATEGORY_IDS.has(patch.category) && patch.category !== 'done')
+        ? (CATEGORY_TO_SECTION[patch.category] ?? item.section)
+        : item.section
+      const nextTags = Object.prototype.hasOwnProperty.call(patch, 'tags')
+        ? normalizeTags(patch.tags)
+        : normalizeTags(item.tags)
       const nextFile = Object.prototype.hasOwnProperty.call(patch, 'file')
         ? (patch.file || 'context/tasks-index.json')
         : item.file
@@ -255,9 +289,20 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         ? '—'
         : (nextFile?.split('/').pop()?.replace('.md', '') || '—')
 
+      const nextCategory = deriveTaskCategory({
+        status: nextDone ? 'done' : 'open',
+        category: (typeof patch.category === 'string' && CATEGORY_IDS.has(patch.category)) ? patch.category : item.category,
+        section: nextSection,
+        tags: nextTags,
+      })
+
       return {
         ...item,
         ...patch,
+        done: nextDone,
+        section: nextSection,
+        category: nextCategory,
+        tags: nextTags,
         file: nextFile,
         project: nextProject,
       }
@@ -281,6 +326,9 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
         if (typeof patch.category === 'string' && CATEGORY_IDS.has(patch.category)) {
           updated.category = patch.category
           if (patch.category !== 'done' && updated.status !== 'done') updated.section = CATEGORY_TO_SECTION[patch.category]
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'tags')) {
+          updated.tags = normalizeTags(patch.tags)
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'prevCategory')) {
           updated.prevCategory = patch.prevCategory ?? null
@@ -797,7 +845,7 @@ function CategorySelect({ value, onChange }) {
         </svg>
       </button>
       {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 60, minWidth: 180, padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
+        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 60, minWidth: 180, maxHeight: '300px', overflowY: 'auto', padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
           {TASK_CATEGORIES.filter((category) => !category.isDone).map((category) => {
             const active = category.id === value
             return (
@@ -860,7 +908,14 @@ function EntitySelector({ value, onChange, listTree, enabledModules }) {
       const inPortal = portalRef.current?.contains(e.target)
       if (!inAnchor && !inPortal) setOpen(false)
     }
-    const closeOnScrollOrResize = () => setOpen(false)
+    const closeOnScrollOrResize = (e) => {
+      // Keep the menu open when the user scrolls inside the dropdown itself.
+      const target = e?.target
+      const inAnchor = !!(target && ref.current?.contains(target))
+      const inPortal = !!(target && portalRef.current?.contains(target))
+      if (inAnchor || inPortal) return
+      setOpen(false)
+    }
     document.addEventListener('mousedown', close)
     window.addEventListener('scroll', closeOnScrollOrResize, true)
     window.addEventListener('resize', closeOnScrollOrResize)
@@ -915,7 +970,7 @@ function EntitySelector({ value, onChange, listTree, enabledModules }) {
       </button>
 
       {open && createPortal(
-        <div ref={portalRef} style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 220, width: 220, padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
+        <div ref={portalRef} style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 220, width: 220, maxHeight: '320px', overflowY: 'auto', padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
           <input
             autoFocus
             value={search}
@@ -1046,7 +1101,14 @@ function TaskRow({ task, category, onToggle, onUpdate, onAddComment, onUpdateCom
       const inPortal = menuPortalRef.current?.contains(e.target)
       if (!inAnchor && !inPortal) setMenuOpen(false)
     }
-    const closeOnScroll = () => setMenuOpen(false)
+    const closeOnScroll = (e) => {
+      // Keep the menu open when the user scrolls inside the actions menu.
+      const target = e?.target
+      const inAnchor = !!(target && menuRef.current?.contains(target))
+      const inPortal = !!(target && menuPortalRef.current?.contains(target))
+      if (inAnchor || inPortal) return
+      setMenuOpen(false)
+    }
     document.addEventListener('mousedown', close)
     window.addEventListener('scroll', closeOnScroll, true)
     window.addEventListener('resize', closeOnScroll)
@@ -1077,6 +1139,10 @@ function TaskRow({ task, category, onToggle, onUpdate, onAddComment, onUpdateCom
   }
 
   const linkedEntity = task.file && task.file !== 'context/tasks-index.json' ? task.file : null
+  const tags = normalizeTags(task.tags)
+  const hasUrgent = tags.includes('urgent')
+  const hasImportant = tags.includes('important') || tags.includes('priority')
+  const currentPriority = hasUrgent ? 'urgent' : (hasImportant ? 'important' : null)
 
   return (
     <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
@@ -1157,7 +1223,32 @@ function TaskRow({ task, category, onToggle, onUpdate, onAddComment, onUpdateCom
             </svg>
           </button>
           {menuOpen && createPortal(
-            <div ref={menuPortalRef} style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 200, minWidth: 150, padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
+            <div ref={menuPortalRef} style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 200, minWidth: 150, maxHeight: '220px', overflowY: 'auto', padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
+              <TaskMenuItem
+                label="Mark as urgent"
+                right={currentPriority === 'urgent' ? '✓' : null}
+                onClick={() => {
+                  onUpdate({ tags: withPriorityTag(tags, 'urgent') })
+                  setMenuOpen(false)
+                }}
+              />
+              <TaskMenuItem
+                label="Mark as important"
+                right={currentPriority === 'important' ? '✓' : null}
+                onClick={() => {
+                  onUpdate({ tags: withPriorityTag(tags, 'important') })
+                  setMenuOpen(false)
+                }}
+              />
+              {currentPriority && (
+                <TaskMenuItem
+                  label="Clear priority"
+                  onClick={() => {
+                    onUpdate({ tags: withPriorityTag(tags, null) })
+                    setMenuOpen(false)
+                  }}
+                />
+              )}
               <TaskMenuItem label="Comment" onClick={openComments} />
               <TaskMenuItem label="Remove" danger onClick={() => { setMenuOpen(false); onDelete() }} />
             </div>,
@@ -1309,7 +1400,7 @@ function EditableCommentText({ value, onCommit }) {
   )
 }
 
-function TaskMenuItem({ label, onClick, danger }) {
+function TaskMenuItem({ label, onClick, danger, right = null }) {
   const [hov, setHov] = useState(false)
   return (
     <div
@@ -1318,7 +1409,8 @@ function TaskMenuItem({ label, onClick, danger }) {
       onMouseLeave={() => setHov(false)}
       style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 5, fontSize: 12.5, cursor: 'pointer', color: danger ? (hov ? 'oklch(0.84 0.16 22)' : 'var(--text-dim)') : (hov ? 'var(--text)' : 'var(--text-dim)'), background: danger ? (hov ? 'oklch(0.70 0.18 22 / 0.12)' : 'transparent') : (hov ? 'var(--panel-2)' : 'transparent') }}
     >
-      {label}
+      <span style={{ flex: 1 }}>{label}</span>
+      {right && <span style={{ color: 'var(--text-very-dim)' }}>{right}</span>}
     </div>
   )
 }

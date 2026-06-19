@@ -644,6 +644,13 @@ function runDeterministicEntityPrepass(noteContent, allowedFiles = [], enabledMo
     : (allowedFiles || []).filter((path) => String(path).toLowerCase().startsWith('ideas/') && String(path).toLowerCase().endsWith('.md'))
 
   for (const candidate of candidates) {
+    const candidateType = classifyUnknownEntityType(candidate.trim())
+    // Ignore technical acronyms/tokens (e.g. "AI", "VS", "AppScript")
+    // before any path matching so they are not auto-linked as projects.
+    if (candidateType === 'ignore') {
+      continue
+    }
+
     const personPath = matchEntityPath(candidate, peoplePaths, false)
     if (personPath) {
       const display = humanizeEntityName(personPath)
@@ -670,7 +677,6 @@ function runDeterministicEntityPrepass(noteContent, allowedFiles = [], enabledMo
     }
 
     // Classify the unknown by heuristic so the cleanup modal shows the right type chip.
-    const candidateType = classifyUnknownEntityType(candidate.trim())
     if (candidateType === 'project') {
       unknownProjects.push(candidate.trim())
     } else {
@@ -1088,13 +1094,38 @@ const _PROJECT_NOUNS = new Set([
   'suite', 'hub', 'engine', 'dashboard', 'api', 'website', 'site', 'page', 'plan',
   'feature', 'module', 'refactor', 'release', 'launch', 'sprint', 'ops', 'operations',
   'slide', 'slides', 'deck', 'template', 'templates', 'doc', 'docs', 'spec', 'brief', 'report', 'board', 'flow',
+  'script', 'appscript', 'vscode', 'sdk',
+])
+
+const _NON_PERSON_TECH_WORDS = new Set([
+  'ai', 'api', 'ux', 'ui', 'llm', 'sdk', 'ide', 'vs', 'appscript', 'vscode',
+  'javascript', 'typescript', 'python', 'react', 'node', 'sql', 'excel', 'sheets',
+  'github', 'gitlab', 'openai', 'anthropic', 'gemini', 'claude', 'ollama',
 ])
 
 function classifyUnknownEntityType(name) {
   const words = String(name || '').trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return 'ignore'
+
+  const normalizedWords = words.map((w) => String(w || '').replace(/[^\w\u00C0-\u017E-]/g, ''))
+  const lowerWords = normalizedWords.map((w) => w.toLowerCase())
+
+  // Ignore short acronyms / technical markers that are not human names.
+  if (
+    words.length === 1
+    && (/^[A-Z]{2,5}$/.test(normalizedWords[0]) || _NON_PERSON_TECH_WORDS.has(lowerWords[0]))
+  ) {
+    return 'ignore'
+  }
+
+  // Ignore camel-case technical tokens like AppScript / SeeApps.
+  if (words.length === 1 && /[a-z][A-Z]/.test(normalizedWords[0])) return 'ignore'
+
+  // If any token looks technical, it's much more likely a project/topic than a person.
+  if (lowerWords.some((w) => _NON_PERSON_TECH_WORDS.has(w))) return 'project'
+
   // 3+ words lean toward project
   if (words.length >= 3) return 'project'
-  const lower = String(name || '').toLowerCase()
   // Contains a project noun
   if (words.some((w) => _PROJECT_NOUNS.has(w.toLowerCase()))) return 'project'
   // Contains non-human chars (dots, digits)

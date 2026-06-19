@@ -292,6 +292,7 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
           const yesterday = y.toISOString().slice(0, 10)
           const doneYesterdayAndToday = allTasks
             .filter(t => t.status === 'done' && (t.resolved_at === yesterday || t.resolved_at === today))
+            .sort((a, b) => String(b.resolved_at || '').localeCompare(String(a.resolved_at || '')))
             .slice(0, 20)
           const doneLines = doneYesterdayAndToday
             .map(t => `- ${t.title} (${t.file?.split('/').pop()?.replace('.md', '') || 'unknown'})`)

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>Memory OS — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* Deep navy palette anchored on #010619 */
+    --bg:           #010619;
+    --bg-sidebar:   #02081f;
+    --panel:        #0a1230;
+    --panel-2:      #121b3d;
+    --panel-pop:    #0e1736;
+    --border:       #1c2750;
+    --border-strong:#2a3768;
+    --border-subtle:#131c40;
+
+    --text:         #e7ecff;
+    --text-dim:     #94a0c9;
+    --text-very-dim:#5f6a96;
+
+    --accent:       oklch(0.80 0.13 80);   /* amber */
+    --success:      oklch(0.74 0.14 165);
+    --info:         oklch(0.72 0.13 240);
+    --danger:       oklch(0.70 0.18 22);
+
+    --font:         "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-display: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono:    "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "ss01", "cv11", "tnum";
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+  /* selection */
+  ::selection { background: oklch(0.80 0.13 80 / 0.3); }
+
+  input::placeholder, textarea::placeholder {
+    color: var(--text-very-dim);
+    opacity: 1;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.55; transform: scale(0.85); }
+  }
+  @keyframes sparkleSpin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<template id="__bundler_thumbnail" data-bg-color="#010619">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect x="0" y="0" width="1200" height="800" fill="#010619"/>
+    <!-- Sidebar -->
+    <rect x="80" y="80" width="220" height="640" rx="14" fill="#02081f" stroke="#1c2750"/>
+    <rect x="100" y="110" width="120" height="12" rx="3" fill="#e7ecff"/>
+    <rect x="100" y="132" width="70"  height="9"  rx="3" fill="#5f6a96"/>
+    <rect x="100" y="170" width="180" height="34" rx="8" fill="#121b3d"/>
+    <rect x="120" y="184" width="100" height="8"  rx="2" fill="#e7ecff"/>
+    <rect x="100" y="230" width="180" height="20" rx="6" fill="#0a1230"/>
+    <rect x="100" y="260" width="180" height="20" rx="6" fill="#0a1230"/>
+    <rect x="100" y="290" width="180" height="20" rx="6" fill="#0a1230"/>
+    <!-- Main: title -->
+    <rect x="360" y="110" width="200" height="14" rx="3" fill="#5f6a96"/>
+    <rect x="360" y="140" width="320" height="36" rx="5" fill="#e7ecff"/>
+    <!-- Heatmap -->
+    <g transform="translate(900,100)">
+      <g fill="#1c2750">
+        <rect x="0"   y="0"  width="10" height="10" rx="2"/><rect x="14"  y="0"  width="10" height="10" rx="2"/><rect x="28"  y="0"  width="10" height="10" rx="2"/><rect x="42"  y="0"  width="10" height="10" rx="2"/><rect x="56"  y="0"  width="10" height="10" rx="2"/>
+        <rect x="0"   y="14" width="10" height="10" rx="2"/><rect x="14"  y="14" width="10" height="10" rx="2"/><rect x="28"  y="14" width="10" height="10" rx="2"/><rect x="42"  y="14" width="10" height="10" rx="2"/><rect x="56"  y="14" width="10" height="10" rx="2"/>
+        <rect x="0"   y="28" width="10" height="10" rx="2"/><rect x="14"  y="28" width="10" height="10" rx="2"/><rect x="28"  y="28" width="10" height="10" rx="2"/><rect x="42"  y="28" width="10" height="10" rx="2"/><rect x="56"  y="28" width="10" height="10" rx="2"/>
+      </g>
+      <g fill="#3b82f6">
+        <rect x="14"  y="0"  width="10" height="10" rx="2"/>
+        <rect x="28"  y="14" width="10" height="10" rx="2"/>
+        <rect x="42"  y="0"  width="10" height="10" rx="2"/>
+        <rect x="56"  y="28" width="10" height="10" rx="2"/>
+        <rect x="0"   y="14" width="10" height="10" rx="2"/>
+      </g>
+    </g>
+    <!-- Needs your call -->
+    <rect x="360" y="220" width="760" height="80" rx="10" fill="#0a1230" stroke="#1c2750"/>
+    <circle cx="384" cy="260" r="4" fill="#facc15"/>
+    <rect x="402" y="252" width="200" height="14" rx="3" fill="#e7ecff"/>
+    <rect x="402" y="272" width="160" height="9"  rx="2" fill="#94a0c9"/>
+    <!-- Project cards -->
+    <rect x="360" y="330" width="370" height="160" rx="10" fill="#0a1230" stroke="#1c2750"/>
+    <rect x="380" y="350" width="200" height="16" rx="3" fill="#e7ecff"/>
+    <rect x="380" y="376" width="320" height="9"  rx="2" fill="#94a0c9"/>
+    <rect x="380" y="392" width="280" height="9"  rx="2" fill="#94a0c9"/>
+    <rect x="380" y="458" width="84"  height="20" rx="10" fill="#1e3a8a"/>
+    <rect x="750" y="330" width="370" height="160" rx="10" fill="#0a1230" stroke="#1c2750"/>
+    <rect x="770" y="350" width="240" height="16" rx="3" fill="#e7ecff"/>
+    <rect x="770" y="376" width="320" height="9"  rx="2" fill="#94a0c9"/>
+    <rect x="770" y="392" width="240" height="9"  rx="2" fill="#94a0c9"/>
+    <rect x="770" y="458" width="68"  height="20" rx="10" fill="#713f12"/>
+    <!-- Tasks list -->
+    <rect x="360" y="520" width="760" height="180" rx="10" fill="#0a1230" stroke="#1c2750"/>
+    <g>
+      <rect x="380" y="540" width="14" height="14" rx="3" stroke="#2a3768" fill="none"/>
+      <rect x="404" y="544" width="380" height="9" rx="2" fill="#e7ecff"/>
+      <rect x="1030" y="544" width="64" height="14" rx="7" fill="#14532d"/>
+    </g>
+    <g>
+      <rect x="380" y="572" width="14" height="14" rx="3" stroke="#2a3768" fill="none"/>
+      <rect x="404" y="576" width="300" height="9" rx="2" fill="#e7ecff"/>
+      <rect x="1030" y="576" width="64" height="14" rx="7" fill="#713f12"/>
+    </g>
+    <g>
+      <rect x="380" y="604" width="14" height="14" rx="3" stroke="#2a3768" fill="none"/>
+      <rect x="404" y="608" width="340" height="9" rx="2" fill="#e7ecff"/>
+      <rect x="1030" y="608" width="64" height="14" rx="7" fill="#7f1d1d"/>
+    </g>
+    <g>
+      <rect x="380" y="636" width="14" height="14" rx="3" stroke="#2a3768" fill="none"/>
+      <rect x="404" y="640" width="260" height="9" rx="2" fill="#e7ecff"/>
+      <rect x="1030" y="640" width="64" height="14" rx="7" fill="#14532d"/>
+    </g>
+  </svg>
+</template>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="sidebar.jsx"></script>
+<script type="text/babel" src="dashboard-top.jsx"></script>
+<script type="text/babel" src="dashboard-sections.jsx"></script>
+<script type="text/babel" src="note-view.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+</body>
+</html>

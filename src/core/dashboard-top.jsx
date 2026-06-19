@@ -640,7 +640,7 @@ function SummaryRow({
           <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em' }}>
             Updates
           </h3>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
             {summariesLoading
               ? <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>Generating updates…</span>
               : dailyUpdates?.text

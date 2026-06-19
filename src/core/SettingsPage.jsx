@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { rebuildIndexFiles, rebuildContext } from '../lib/rebuildContext'
 import { migrateEntityTasks } from '../lib/migrateEntityTasks'
 import { cleanEntityFiles } from '../lib/cleanEntityFiles'
-import { callLLM, PROVIDERS } from '../lib/llm'
+import { callLLM, PROVIDERS, normalizeModelForProvider } from '../lib/llm'
 import { PrimaryButton, SecondaryButton } from '../components/ui/Buttons'
 import {
   readTasksIndex,
@@ -17,6 +17,38 @@ const DEFAULT_ENABLED_MODULES = {
   projects: true,
   people: true,
   ideas: true,
+}
+
+const MODEL_OPTIONS = {
+  openrouter: [
+    { value: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
+    { value: 'anthropic/claude-3-haiku', label: 'Claude 3 Haiku (fast)' },
+    { value: 'openai/gpt-4o', label: 'GPT-4o' },
+    { value: 'openai/gpt-4o-mini', label: 'GPT-4o mini (fast)' },
+    { value: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
+    { value: 'google/gemini-2.0-flash-001', label: 'Gemini 2.0 Flash' },
+    { value: 'google/gemma-4-31b-it', label: 'Gemma 4 31B' },
+    { value: '__custom__', label: 'Other (enter model ID...)' },
+  ],
+  anthropic: [
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)' },
+    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus' },
+    { value: '__custom__', label: 'Other (enter model ID...)' },
+  ],
+  openai: [
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o mini (fast)' },
+    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+    { value: '__custom__', label: 'Other (enter model ID...)' },
+  ],
+  ollama: [
+    { value: 'llama3.2', label: 'Llama 3.2' },
+    { value: 'llama3.1', label: 'Llama 3.1' },
+    { value: 'mistral', label: 'Mistral' },
+    { value: 'phi4', label: 'Phi-4' },
+    { value: '__custom__', label: 'Other (enter model ID...)' },
+  ],
 }
 
 // Modules that own task data - disabling these triggers the migration modal.
@@ -360,7 +392,7 @@ function DashboardSectionConfig({ value, onChange }) {
 export default function SettingsPage({ writeFile, readFile, listTree, settings, saveSettings }) {
   const [form, setForm] = useState({
     apiKey:   settings.apiKey   || '',
-    model:    settings.model    || 'meta-llama/llama-3.3-70b-instruct',
+    model:    normalizeModelForProvider(settings.provider || 'openrouter', settings.model) || PROVIDERS.openrouter.model,
     provider: settings.provider || 'openrouter',
     writerFile: settings.writerFile || '',
     enabledModules: settings.enabledModules || DEFAULT_ENABLED_MODULES,
@@ -382,10 +414,11 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
   const [activeSection, setActiveSection] = useState('ai')
 
   useEffect(() => {
+    const provider = settings.provider || 'openrouter'
     setForm({
       apiKey: settings.apiKey || '',
-      model: settings.model || 'meta-llama/llama-3.3-70b-instruct',
-      provider: settings.provider || 'openrouter',
+      model: normalizeModelForProvider(provider, settings.model) || PROVIDERS.openrouter.model,
+      provider,
       writerFile: settings.writerFile || '',
       enabledModules: settings.enabledModules || DEFAULT_ENABLED_MODULES,
       dashboardSections: settings.dashboardSections || {},
@@ -400,6 +433,26 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
   const updateAiField = (patch) => {
     setSaved(false)
     setForm((prev) => ({ ...prev, ...patch }))
+  }
+
+  const providerDef = PROVIDERS[form.provider] || PROVIDERS.openrouter
+  const modelOptions = MODEL_OPTIONS[form.provider] || MODEL_OPTIONS.openrouter
+  const isCustomModel = !modelOptions.some((opt) => opt.value !== '__custom__' && opt.value === form.model)
+  const modelSelectValue = isCustomModel ? '__custom__' : form.model
+
+  const handleProviderChange = (provider) => {
+    updateAiField({
+      provider,
+      model: normalizeModelForProvider(provider, PROVIDERS[provider]?.model || ''),
+    })
+  }
+
+  const handleModelSelect = (value) => {
+    if (value === '__custom__') {
+      updateAiField({ model: '' })
+      return
+    }
+    updateAiField({ model: normalizeModelForProvider(form.provider, value) })
   }
 
   const handleRebuildContext = async () => {
@@ -446,7 +499,15 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
       setConnectionMessage(preview.slice(0, 120))
     } catch (err) {
       setConnectionStatus('error')
-      setConnectionMessage(err?.message || 'Connection test failed')
+      const rawMessage = err?.message || 'Connection test failed'
+      if (
+        form.provider === 'anthropic'
+        && /failed to fetch|networkerror/i.test(String(rawMessage))
+      ) {
+        setConnectionMessage('Network/CORS error while calling Anthropic. Verify your key and try again.')
+      } else {
+        setConnectionMessage(rawMessage)
+      }
     } finally {
       setTestingConnection(false)
     }
@@ -653,7 +714,7 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                 <FieldLabel>Provider</FieldLabel>
                 <StyledSelect
                   value={form.provider}
-                  onChange={value => updateAiField({ provider: value })}
+                  onChange={handleProviderChange}
                   options={[
                     { value: 'openrouter', label: 'OpenRouter' },
                     { value: 'anthropic', label: 'Anthropic' },
@@ -663,26 +724,37 @@ export default function SettingsPage({ writeFile, readFile, listTree, settings, 
                 />
               </div>
 
-              <div className="space-y-2">
-                <FieldLabel>API Key</FieldLabel>
-                <StyledInput
-                  type="password"
-                  value={form.apiKey}
-                  onChange={value => updateAiField({ apiKey: value })}
-                  placeholder="sk-or-…"
-                  mono
-                />
-              </div>
+              {providerDef.needsKey !== false && (
+                <div className="space-y-2">
+                  <FieldLabel>API Key</FieldLabel>
+                  <StyledInput
+                    type="password"
+                    value={form.apiKey}
+                    onChange={value => updateAiField({ apiKey: value })}
+                    placeholder="sk-or-..."
+                    mono
+                  />
+                </div>
+              )}
 
               <div className="space-y-2">
                 <FieldLabel>Model</FieldLabel>
-                <StyledInput
-                  type="text"
-                  value={form.model}
-                  onChange={value => updateAiField({ model: value })}
-                  placeholder="meta-llama/llama-3.3-70b-instruct"
-                  mono
+                <StyledSelect
+                  value={modelSelectValue}
+                  onChange={handleModelSelect}
+                  options={modelOptions}
                 />
+                {isCustomModel && (
+                  <div style={{ marginTop: 8 }}>
+                    <StyledInput
+                      type="text"
+                      value={form.model}
+                      onChange={value => updateAiField({ model: normalizeModelForProvider(form.provider, value) })}
+                      placeholder={providerDef.model || 'e.g. my-model-id'}
+                      mono
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-3">

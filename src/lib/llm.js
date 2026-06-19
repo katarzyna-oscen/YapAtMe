@@ -15,7 +15,7 @@ export const PROVIDERS = {
   anthropic: {
     label:    'Anthropic',
     baseUrl:  'https://api.anthropic.com',
-    model:    'claude-sonnet-4-5',
+    model:    'claude-3-5-sonnet-20240620',
     needsKey: true,
   },
   openai: {
@@ -45,13 +45,88 @@ export const DEFAULT_SETTINGS = {
   baseUrl:  '',
 }
 
+const ANTHROPIC_MODEL_ALIASES = {
+  'claude-sonnet-4-7': 'claude-3-5-sonnet-20240620',
+  'claude-sonnet-4-6': 'claude-3-5-sonnet-20241022',
+  'claude-sonnet-4-5': 'claude-3-5-sonnet-20241022',
+  'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
+  'claude-3-5-haiku-latest': 'claude-haiku-4-5-20251001',
+  'claude-3-5-haiku-20241022': 'claude-haiku-4-5-20251001',
+  'claude-3-haiku-latest': 'claude-haiku-4-5-20251001',
+  'claude-3-haiku-20240307': 'claude-haiku-4-5-20251001',
+  'claude-3-opus-latest': 'claude-3-opus-20240229',
+}
+
+function normalizeModelForProvider(provider, model) {
+  let normalized = String(model || '').trim()
+  if (!normalized) return normalized
+
+  // If a model ID copied from OpenRouter is used with Anthropic directly,
+  // convert `anthropic/...` to Anthropic-native model names.
+  if (provider === 'anthropic') {
+    if (normalized.startsWith('anthropic/')) {
+      normalized = normalized.slice('anthropic/'.length)
+    }
+    normalized = ANTHROPIC_MODEL_ALIASES[normalized] || normalized
+  }
+
+  return normalized
+}
+
+function anthropicModelCandidates(model) {
+  const initial = normalizeModelForProvider('anthropic', model)
+  const out = []
+  const add = (m) => {
+    const value = String(m || '').trim()
+    if (!value) return
+    if (!out.includes(value)) out.push(value)
+  }
+
+  add(initial)
+
+  // Generic alias softening.
+  if (initial.endsWith('-latest')) {
+    add(initial.replace(/-latest$/, ''))
+  }
+
+  // Family fallback safety net in case upstream aliasing changes.
+  const lower = initial.toLowerCase()
+  if (lower.includes('haiku')) {
+    // Some Anthropic accounts expose only a subset of model snapshots.
+    // Try the requested generation first, then progressively older/wider ones.
+    add('claude-haiku-4-5-20251001')
+    add('claude-3-5-haiku-20241022')
+    add('claude-3-haiku-20240307')
+    add('claude-3-5-sonnet-20241022')
+    add('claude-3-5-sonnet-20240620')
+  } else if (lower.includes('opus')) {
+    add('claude-3-opus-20240229')
+    add('claude-3-5-sonnet-20241022')
+    add('claude-3-5-sonnet-20240620')
+  } else {
+    add('claude-3-5-sonnet-20241022')
+    add('claude-3-5-sonnet-20240620')
+    add('claude-3-haiku-20240307')
+  }
+
+  // Absolute final safety net if family detection misses edge-case naming.
+  if (!lower.includes('haiku') && !lower.includes('opus')) {
+    add('claude-3-5-sonnet-20241022')
+    add('claude-3-5-sonnet-20240620')
+  }
+
+  return out
+}
+
 // Resolve effective values: fall back to provider defaults for empty fields.
 function resolve(settings) {
   const def = PROVIDERS[settings.provider] ?? PROVIDERS.openrouter
+  const provider = settings.provider
+  const resolvedModel = normalizeModelForProvider(provider, settings.model || def.model)
   return {
-    provider: settings.provider,
+    provider,
     apiKey:   settings.apiKey  || '',
-    model:    settings.model   || def.model,
+    model:    resolvedModel,
     baseUrl:  settings.baseUrl || def.baseUrl,
   }
 }
@@ -132,22 +207,40 @@ async function callAnthropic(messages, systemPrompt, { apiKey, model, baseUrl },
       'Content-Type':      'application/json',
       'x-api-key':         apiKey,
       'anthropic-version': '2023-06-01',
+      // Anthropic requires this explicit opt-in for direct browser usage.
+      // Without it, requests from the app can fail with a generic "Failed to fetch".
+      'anthropic-dangerous-direct-browser-access': 'true',
     }
 
-    const body = {
-      model,
-      max_tokens: maxTokens,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
-      messages,
+    const candidates = anthropicModelCandidates(model)
+    let lastModelErr = ''
+
+    for (const candidateModel of candidates) {
+      const body = {
+        model: candidateModel,
+        max_tokens: maxTokens,
+        ...(systemPrompt ? { system: systemPrompt } : {}),
+        messages,
+      }
+
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+      if (!res.ok) {
+        const err = await res.text().catch(() => res.statusText)
+        const modelNotFound = res.status === 404 && /not_found_error|model/i.test(String(err || ''))
+        if (modelNotFound) {
+          lastModelErr = String(err || '')
+          continue
+        }
+        throw new Error(`LLM error ${res.status}: ${err}`)
+      }
+
+      const data = await parseJsonResponse(res)
+      return data.content?.[0]?.text ?? ''
     }
 
-    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
-    if (!res.ok) {
-      const err = await res.text().catch(() => res.statusText)
-      throw new Error(`LLM error ${res.status}: ${err}`)
-    }
-    const data = await parseJsonResponse(res)
-    return data.content?.[0]?.text ?? ''
+    throw new Error(
+      `LLM error 404: model not found. Tried: ${candidates.join(', ')}${lastModelErr ? ` | ${lastModelErr}` : ''}`
+    )
   })
 }
 
@@ -162,4 +255,4 @@ export async function callLLM(messages, systemPrompt, settings, maxTokens = 4096
   return callOpenAICompat(messages, systemPrompt, r, maxTokens)
 }
 
-export { isAuthErrorMessage }
+export { isAuthErrorMessage, normalizeModelForProvider }

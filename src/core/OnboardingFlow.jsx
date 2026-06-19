@@ -3,7 +3,7 @@
 // Props: openFolder, fileExists, listTree, writeFile, settings, saveSettings, onComplete
 
 import { useState, useEffect, useCallback } from 'react'
-import { callLLM, PROVIDERS } from '../lib/llm'
+import { callLLM, PROVIDERS, normalizeModelForProvider } from '../lib/llm'
 
 // ─── Icon ───────────────────────────────────────────────────────────────────
 function OnbIcon({ name, size = 16, stroke = 1.6 }) {
@@ -432,9 +432,9 @@ const MODEL_OPTIONS = {
     { value: '__custom__',                           label: 'Other (enter model ID…)' },
   ],
   anthropic: [
-    { value: 'claude-sonnet-4-5',        label: 'Claude Sonnet 4.5' },
-    { value: 'claude-3-5-haiku-latest',  label: 'Claude 3.5 Haiku (fast)' },
-    { value: 'claude-3-opus-latest',     label: 'Claude 3 Opus' },
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku 4.5 (fast)' },
+    { value: 'claude-3-opus-20240229',     label: 'Claude 3 Opus' },
     { value: '__custom__',               label: 'Other (enter model ID…)' },
   ],
   openai: [
@@ -468,7 +468,7 @@ function AiScreen({ s, act }) {
     if (v === '__custom__') {
       act.setModel('')
     } else {
-      act.setModel(v)
+      act.setModel(normalizeModelForProvider(s.provider, v))
     }
     if (error) setError(null)
   }
@@ -523,7 +523,7 @@ function AiScreen({ s, act }) {
           <SelectField value={selectValue} onChange={handleSelectModel} options={modelOptions} />
           {isCustom && (
             <div style={{ marginTop: 8 }}>
-              <TextField value={s.model} onChange={v => { act.setModel(v); if (error) setError(null) }}
+              <TextField value={s.model} onChange={v => { act.setModel(normalizeModelForProvider(s.provider, v)); if (error) setError(null) }}
                 placeholder={providerDef.model || 'e.g. my-model-id'} mono autoFocus />
             </div>
           )}
@@ -772,9 +772,9 @@ export default function OnboardingFlow({ openFolder, fileExists, listTree, initi
     setName: name => patch({ name }),
     setFolder: folder => patch({ folder }),
     connectExisting: () => { patch({ folder: { ...s.folder, state: 'A' } }); setStep('ai') },
-    setProvider: provider => patch({ provider, model: PROVIDERS[provider]?.model || '' }),
+    setProvider: provider => patch({ provider, model: normalizeModelForProvider(provider, PROVIDERS[provider]?.model || '') }),
     setApiKey: apiKey => patch({ apiKey }),
-    setModel: model => patch({ model }),
+    setModel: model => patch({ model: normalizeModelForProvider(s.provider, model) }),
     toggleModule: id => setS(prev => ({ ...prev, modules: { ...prev.modules, [id]: !prev.modules[id] } })),
     addSeed: kind => setS(prev => {
       const key = kind === 'people' ? 'seedPeople' : 'seedProjects'
