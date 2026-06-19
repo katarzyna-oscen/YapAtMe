@@ -306,12 +306,12 @@ Completed yesterday and today (${yesterday} to ${today}):
 ${doneLines || '(none)'}
 
 Instructions:
-- Output ONLY bullets matching the list above
+- Output ONE bullet for EVERY task in the list above — do not skip any
 - Convert each task title to PAST TENSE (e.g., "Discuss X" → "Discussed X", "Review Y" → "Reviewed Y")
 - Do NOT rephrase or reword task titles beyond tense conversion
 - Do NOT combine multiple tasks into one bullet
 - Do NOT include tasks not in the list above
-- Output 1-6 bullets exactly
+- Output exactly ${doneYesterdayAndToday.length} bullet(s), one per task, in the same order
 - If no tasks, output: "No completed tasks in the last 2 days."`
           const raw = await callLLM(
             [{ role: 'user', content: prompt }],

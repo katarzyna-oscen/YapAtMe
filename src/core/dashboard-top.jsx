@@ -636,11 +636,11 @@ function SummaryRow({
         </div>
 
         {/* Updates */}
-        <div style={cardStyle(80)}>
-          <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em' }}>
+        <div style={{ ...cardStyle(80), maxHeight: 340 }}>
+          <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em', flexShrink: 0 }}>
             Updates
           </h3>
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: 10 }}>
             {summariesLoading
               ? <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>Generating updates…</span>
               : dailyUpdates?.text
@@ -653,7 +653,7 @@ function SummaryRow({
             }
           </div>
           {(dailyUpdates?.generated_at || dailyUpdates?.sourceComment) && (
-            <div style={{ marginTop: 'auto', paddingTop: 12, fontSize: 11, letterSpacing: '0.04em', color: 'var(--text-very-dim)' }}>
+            <div style={{ paddingTop: 12, marginTop: 8, borderTop: '1px solid var(--border-subtle)', fontSize: 11, letterSpacing: '0.04em', color: 'var(--text-very-dim)', flexShrink: 0 }}>
               <span>{fmtGeneratedAt(dailyUpdates.generated_at)}</span>
               {dailyUpdates.sourceComment && <span style={{ marginLeft: 8, opacity: 0.7 }}>{dailyUpdates.sourceComment}</span>}
             </div>
