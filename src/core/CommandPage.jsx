@@ -284,23 +284,24 @@ export default function CommandPage({ readFile, writeFile, listTree, settings, s
           .then(({ entityNameMap }) => rebuildContext(readFile, writeFile, settings, entityNameMap))
           .then(() => loadContextSnapshot())
           .catch(err => console.error('Context rebuild failed:', err)),
-        // 2. Updates from yesterday's completed tasks
+        // 2. Updates from yesterday and today's completed tasks
         (async () => {
           const allTasks = await readTasksIndex(readFile)
+          const today = new Date().toISOString().slice(0, 10)
           const y = new Date(Date.now() - 86_400_000)
           const yesterday = y.toISOString().slice(0, 10)
-          const doneYesterday = allTasks
-            .filter(t => t.status === 'done' && t.resolved_at === yesterday)
+          const doneYesterdayAndToday = allTasks
+            .filter(t => t.status === 'done' && (t.resolved_at === yesterday || t.resolved_at === today))
             .slice(0, 20)
-          const doneLines = doneYesterday
+          const doneLines = doneYesterdayAndToday
             .map(t => `- ${t.title} (${t.file?.split('/').pop()?.replace('.md', '') || 'unknown'})`)
             .join('\n')
-          const sourceComment = doneYesterday.length > 0
-            ? `[Source: ${doneYesterday.length} completed task(s) from ${yesterday}]`
+          const sourceComment = doneYesterdayAndToday.length > 0
+            ? `[Source: ${doneYesterdayAndToday.length} completed task(s) from ${yesterday} and ${today}]`
             : '[Source: No completed tasks]'
           const prompt = `Generate a concise bullet-point summary of these completed tasks. Convert all task titles to PAST TENSE. DO NOT REPHRASE, COMBINE, OR ADD TASKS. Use the exact task titles provided, but convert to past tense.
 
-Completed yesterday (${yesterday}):
+Completed yesterday and today (${yesterday} to ${today}):
 ${doneLines || '(none)'}
 
 Instructions:
@@ -310,7 +311,7 @@ Instructions:
 - Do NOT combine multiple tasks into one bullet
 - Do NOT include tasks not in the list above
 - Output 1-6 bullets exactly
-- If no tasks, output: "No completed tasks yesterday."`
+- If no tasks, output: "No completed tasks in the last 2 days."`
           const raw = await callLLM(
             [{ role: 'user', content: prompt }],
             'You generate updates by directly using completed task titles with no rephrasing.',
@@ -320,7 +321,7 @@ Instructions:
             text: raw.trim(),
             sourceComment,
             generated_at: new Date().toISOString(),
-            sourceCount: doneYesterday.length,
+            sourceCount: doneYesterdayAndToday.length,
           }
           await writeFile(DAILY_UPDATES_PATH, JSON.stringify(result, null, 2))
           setDailyUpdates(result)
