@@ -405,58 +405,62 @@ function extractEntityCandidates(noteContent) {
     buckets.get(key).push(inner)
   }
 
-  // 2. Extract capitalized names from person-name contexts (after with/and/to/from/met/called/told/asked/emailed/pinged)
-  const NAME_CONTEXT_RE = /\b(?:with|and|to|from|met|called|told|asked|emailed|pinged|cc|via)\s+([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})/gu
+  // 2. Extract names from explicit person-name contexts.
+  // Strong person verbs (met/called/told/asked/emailed/pinged/talked to/spoke) are a
+  // reliable person signal, so we allow lowercase here to catch dictated names like
+  // "met with valerio". Generic prepositions (with/to/from/and) stay capital-only —
+  // they are too common to risk on lowercase words.
   const STOP_WORDS = new Set([
     'the', 'this', 'that', 'then', 'them', 'they', 'their', 'there', 'these', 'those',
     'today', 'tomorrow', 'tuesday', 'thursday', 'wednesday', 'monday', 'friday', 'saturday', 'sunday',
     'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
     'quick', 'some', 'about', 'also', 'just', 'very', 'much', 'many', 'more', 'most',
+    'make', 'made', 'meet', 'figure', 'discuss', 'check', 'show', 'create', 'brief', 'me', 'it', 'do', 'be', 'get', 'go',
+    'work', 'set', 'use', 'help', 'see', 'find', 'next', 'new', 'his', 'her', 'our', 'your', 'light', 'dark', 'later', 'mostly',
   ])
-  for (const match of text.matchAll(NAME_CONTEXT_RE)) {
-    const candidate = match[1].trim()
-    if (!candidate || candidate.length < 2) continue
-    if (STOP_WORDS.has(candidate.toLowerCase())) continue
+  const addCandidate = (raw) => {
+    let candidate = String(raw || '').trim()
+    if (!candidate || candidate.length < 2) return
+    if (STOP_WORDS.has(candidate.toLowerCase())) return
+    // Capitalize each word for consistency (e.g. "valerio" → "Valerio")
+    candidate = candidate.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
     const key = candidate.toLowerCase()
     if (!buckets.has(key)) buckets.set(key, [])
     buckets.get(key).push(candidate)
   }
 
-  // 2b. Conjunction lists: "Paweł and Alorah", "Alex, Maria and Sam" — capture BOTH sides.
-  // The NAME_CONTEXT rule only grabs the word after "and", so the word before is missed.
-  const CONJ_RE = /\b([A-Z][\w\u00C0-\u017E]+)\s*(?:,|and|&)\s*([A-Z][\w\u00C0-\u017E]+)\b/gu
-  for (const match of text.matchAll(CONJ_RE)) {
-    for (const candidate of [match[1], match[2]]) {
-      const name = candidate.trim()
-      if (!name || name.length < 2) continue
-      if (STOP_WORDS.has(name.toLowerCase())) continue
-      const key = name.toLowerCase()
-      if (!buckets.has(key)) buckets.set(key, [])
-      buckets.get(key).push(name)
-    }
+  // 2a. Strong person verbs — allow lowercase first word (dictated names).
+  const STRONG_NAME_RE = /\b(?:met(?:\s+with)?|called|told|asked|emailed|pinged|talked\s+to|spoke\s+(?:to|with)|spoke)\s+([A-Za-z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})/gu
+  for (const match of text.matchAll(STRONG_NAME_RE)) {
+    addCandidate(match[1])
   }
 
-  // 2c. Relative clauses: "that Isaac created", "which Diana prepared".
+  // 2b. Generic prepositions — capital-only to avoid common words.
+  const NAME_CONTEXT_RE = /\b(?:with|and|to|from|cc|via)\s+([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})/gu
+  for (const match of text.matchAll(NAME_CONTEXT_RE)) {
+    addCandidate(match[1])
+  }
+
+  // 2c. Conjunction lists: "Paweł and Alorah", "Alex, Maria and Sam" — capture BOTH sides.
+  // The NAME_CONTEXT rule only grabs the word after "and", so the word before is missed.
+  // Capital-only: lowercase here would flag everyday "<word> and <word>" pairs.
+  const CONJ_RE = /\b([A-Z][\w\u00C0-\u017E]+)\s*(?:,|and|&)\s*([A-Z][\w\u00C0-\u017E]+)\b/gu
+  for (const match of text.matchAll(CONJ_RE)) {
+    addCandidate(match[1])
+    addCandidate(match[2])
+  }
+
+  // 2d. Relative clauses: "that Isaac created", "which Diana prepared".
   // This catches names that are not preceded by the context triggers above.
   const RELATIVE_RE = /\b(?:that|which|who)\s+([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+){0,2})\s+(?:created|made|built|designed|prepared|presented|informed|shared|sent|wrote|drafted|reviewed|approved|updated|changed|did)\b/gu
   for (const match of text.matchAll(RELATIVE_RE)) {
-    const candidate = match[1].trim()
-    if (!candidate || candidate.length < 2) continue
-    if (STOP_WORDS.has(candidate.toLowerCase())) continue
-    const key = candidate.toLowerCase()
-    if (!buckets.has(key)) buckets.set(key, [])
-    buckets.get(key).push(candidate)
+    addCandidate(match[1])
   }
 
   // 3. Extract names from possessive form (e.g. "Diana's decision", "Paweł's report")
   const POSSESSIVE_RE = /\b([A-Z][\w\u00C0-\u017E]+(?:\s+[A-Z][\w\u00C0-\u017E]+)?)['\u2019]s\b/gu
   for (const match of text.matchAll(POSSESSIVE_RE)) {
-    const candidate = match[1].trim()
-    if (!candidate || candidate.length < 2) continue
-    if (STOP_WORDS.has(candidate.toLowerCase())) continue
-    const key = candidate.toLowerCase()
-    if (!buckets.has(key)) buckets.set(key, [])
-    buckets.get(key).push(candidate)
+    addCandidate(match[1])
   }
 
   const unique = [...buckets.values()].map((values) =>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { deleteTaskEntry, resolveTaskEntry, unresolveTaskEntry, notifyTasksIndexChanged, archiveDoneTasks } from '../lib/tasksIndex'
 import { addTaskComment } from '../lib/taskMarker'
+import { PrioritySelect } from '../components/PrioritySelect'
 
 const TASK_CATEGORIES = [
   { id: 'needs-call', label: 'Needs Your Call', hue: 25, description: 'blockers and decisions waiting on you' },
@@ -134,6 +135,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
   const [draft, setDraft] = useState('')
   const [draftEntityPath, setDraftEntityPath] = useState(null)
   const [draftCategory, setDraftCategory] = useState('actions')
+  const [draftPriority, setDraftPriority] = useState('standard')
 
   const [expandedComments, setExpandedComments] = useState(() => new Set())
   const [dragId, setDragId] = useState(null)
@@ -408,7 +410,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
       category: draftCategory,
       section,
       status: 'open',
-      tags: [],
+      tags: withPriorityTag([], draftPriority === 'standard' ? null : draftPriority),
       last_updated: today,
       comments: [],
     }
@@ -416,6 +418,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
     setTasks((prev) => [indexEntryToTask(newEntry), ...prev])
     setDraft('')
     setDraftEntityPath(null)
+    setDraftPriority('standard')
     setAdding(false)
 
     try {
@@ -430,7 +433,7 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
     } catch (err) {
       console.error('Add task failed:', err.message)
     }
-  }, [draft, draftEntityPath, draftCategory, readFile, writeFile])
+  }, [draft, draftEntityPath, draftCategory, draftPriority, readFile, writeFile])
 
   const removeAllDone = useCallback(async () => {
     const count = await archiveDoneTasks(readFile, writeFile)
@@ -582,11 +585,14 @@ export default function TasksPage({ readFile, writeFile, fileExists, listTree, s
             setEntityPath={setDraftEntityPath}
             category={draftCategory}
             setCategory={setDraftCategory}
+            priority={draftPriority}
+            setPriority={setDraftPriority}
             inputRef={inputRef}
             onCommit={addTask}
             onCancel={() => {
               setDraft('')
               setDraftEntityPath(null)
+              setDraftPriority('standard')
               setAdding(false)
             }}
             listTree={listTree}
@@ -795,7 +801,7 @@ function ToggleCommentsButton({ anyOpen, count, onClick }) {
   )
 }
 
-function DraftRow({ draft, setDraft, entityPath, setEntityPath, category, setCategory, inputRef, onCommit, onCancel, listTree, enabledModules }) {
+function DraftRow({ draft, setDraft, entityPath, setEntityPath, category, setCategory, priority, setPriority, inputRef, onCommit, onCancel, listTree, enabledModules }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: 'var(--panel-2)', border: '1px solid var(--accent)', borderRadius: 10 }}>
       <span style={{ width: 18, height: 18, border: '1.5px dashed var(--border-strong)', borderRadius: 5, flexShrink: 0 }} />
@@ -807,6 +813,7 @@ function DraftRow({ draft, setDraft, entityPath, setEntityPath, category, setCat
         placeholder="What needs doing?"
         style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', fontSize: 13.5, fontFamily: 'inherit' }}
       />
+      <PrioritySelect priority={priority} onChange={setPriority} />
       <CategorySelect value={category} onChange={setCategory} />
       <EntitySelector value={entityPath} onChange={setEntityPath} listTree={listTree} enabledModules={enabledModules} />
       <button onClick={onCommit} style={{ padding: '5px 12px', background: 'var(--accent)', color: '#1a1408', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
@@ -1210,6 +1217,11 @@ function TaskRow({ task, category, onToggle, onUpdate, onAddComment, onUpdateCom
 
         <AgeChip date={task.created} />
 
+        <PrioritySelect
+          priority={currentPriority || 'standard'}
+          onChange={(p) => onUpdate({ tags: withPriorityTag(tags, p === 'standard' ? null : p) })}
+        />
+
         <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }}>
           <button
             ref={menuBtnRef}
@@ -1224,31 +1236,6 @@ function TaskRow({ task, category, onToggle, onUpdate, onAddComment, onUpdateCom
           </button>
           {menuOpen && createPortal(
             <div ref={menuPortalRef} style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 200, minWidth: 150, maxHeight: '220px', overflowY: 'auto', padding: 4, background: 'var(--panel-pop)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 12px 32px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.02)' }}>
-              <TaskMenuItem
-                label="Mark as urgent"
-                right={currentPriority === 'urgent' ? '✓' : null}
-                onClick={() => {
-                  onUpdate({ tags: withPriorityTag(tags, 'urgent') })
-                  setMenuOpen(false)
-                }}
-              />
-              <TaskMenuItem
-                label="Mark as important"
-                right={currentPriority === 'important' ? '✓' : null}
-                onClick={() => {
-                  onUpdate({ tags: withPriorityTag(tags, 'important') })
-                  setMenuOpen(false)
-                }}
-              />
-              {currentPriority && (
-                <TaskMenuItem
-                  label="Clear priority"
-                  onClick={() => {
-                    onUpdate({ tags: withPriorityTag(tags, null) })
-                    setMenuOpen(false)
-                  }}
-                />
-              )}
               <TaskMenuItem label="Comment" onClick={openComments} />
               <TaskMenuItem label="Remove" danger onClick={() => { setMenuOpen(false); onDelete() }} />
             </div>,

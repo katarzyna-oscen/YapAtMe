@@ -1,15 +1,5 @@
-function getPriorityChip(task) {
-  const tags = Array.isArray(task?.tags) ? task.tags.map((tag) => String(tag).toLowerCase()) : []
-  const text = String(task?.title || '').toLowerCase()
-
-  if (tags.includes('urgent') || /\b(urgent|asap|immediately|critical|blocker)\b/.test(text)) {
-    return 'urgent'
-  }
-  if (tags.includes('important') || tags.includes('priority') || /\b(important|high-priority|priority)\b/.test(text)) {
-    return 'important'
-  }
-  return null
-}
+import { useState, useRef, useEffect } from 'react'
+import { PrioritySelect, PriorityChip, tagsToPriority, applyPriorityToTags } from './PrioritySelect'
 
 function renderLinkedText(text, onWikilinkClick) {
   const parts = String(text || '').split(/(\[\[[^\]]+\]\])/g)
@@ -38,7 +28,68 @@ function renderLinkedText(text, onWikilinkClick) {
   })
 }
 
-export default function TaskPanel({ tasks = [], sections = [], onResolve, onWikilinkClick }) {
+function EditableTitle({ value, onCommit, onWikilinkClick }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value || '')
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+  }, [editing])
+
+  const commit = () => {
+    const next = draft.trim()
+    setEditing(false)
+    if (next && next !== value) onCommit?.(next)
+    else setDraft(value || '')
+  }
+
+  if (!onCommit) {
+    return <span style={{ minWidth: 0, flex: 1 }}>{renderLinkedText(value, onWikilinkClick)}</span>
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+          if (e.key === 'Escape') { setDraft(value || ''); setEditing(false) }
+        }}
+        style={{
+          minWidth: 0,
+          flex: 1,
+          background: 'var(--panel-2)',
+          border: '1px solid var(--accent)',
+          borderRadius: 5,
+          color: 'var(--text)',
+          fontSize: 13,
+          fontFamily: 'inherit',
+          padding: '2px 6px',
+          outline: 'none',
+        }}
+      />
+    )
+  }
+
+  return (
+    <span
+      onClick={() => { setDraft(value || ''); setEditing(true) }}
+      style={{ minWidth: 0, flex: 1, cursor: 'text' }}
+      title="Click to edit"
+    >
+      {renderLinkedText(value, onWikilinkClick)}
+    </span>
+  )
+}
+
+export default function TaskPanel({ tasks = [], sections = [], onResolve, onWikilinkClick, onUpdateTask }) {
   const groupedSections = sections
     .map((section) => ({
       section,
@@ -72,57 +123,51 @@ export default function TaskPanel({ tasks = [], sections = [], onResolve, onWiki
               background: 'var(--panel)',
             }}
           >
-            {sectionTasks.map((task, index) => (
-              <div
-                key={task.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '10px 12px',
-                  borderTop: index === 0 ? 'none' : '1px solid var(--border-subtle)',
-                }}
-              >
-                <button
-                  onClick={() => onResolve?.(task.id)}
-                  title="Resolve task"
+            {sectionTasks.map((task, index) => {
+              const priority = tagsToPriority(task.tags)
+              return (
+                <div
+                  key={task.id}
                   style={{
-                    width: 18,
-                    height: 18,
-                    flexShrink: 0,
-                    border: '1.5px solid var(--border-strong)',
-                    borderRadius: 5,
-                    background: 'transparent',
-                    cursor: 'pointer',
-                    padding: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '10px 12px',
+                    borderTop: index === 0 ? 'none' : '1px solid var(--border-subtle)',
                   }}
-                />
-                <div style={{ fontSize: 13, color: 'var(--text)', minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ minWidth: 0, flex: 1 }}>{renderLinkedText(task.title, onWikilinkClick)}</span>
-                  {getPriorityChip(task) && (
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        padding: '2px 7px',
-                        borderRadius: 999,
-                        background: 'oklch(0.65 0.2 25 / 0.12)',
-                        border: '1px solid oklch(0.65 0.2 25 / 0.30)',
-                        color: 'oklch(0.78 0.18 25)',
-                        fontSize: 10.5,
-                        fontWeight: 700,
-                        letterSpacing: '0.04em',
-                        textTransform: 'uppercase',
-                        whiteSpace: 'nowrap',
-                        flexShrink: 0,
-                      }}
-                    >
-                      {getPriorityChip(task)}
-                    </span>
-                  )}
+                >
+                  <button
+                    onClick={() => onResolve?.(task.id)}
+                    title="Resolve task"
+                    style={{
+                      width: 18,
+                      height: 18,
+                      flexShrink: 0,
+                      border: '1.5px solid var(--border-strong)',
+                      borderRadius: 5,
+                      background: 'transparent',
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  />
+                  <div style={{ fontSize: 13, color: 'var(--text)', minWidth: 0, flex: 1, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <EditableTitle
+                      value={task.title}
+                      onCommit={onUpdateTask ? (title) => onUpdateTask(task.id, { title }) : null}
+                      onWikilinkClick={onWikilinkClick}
+                    />
+                    {onUpdateTask ? (
+                      <PrioritySelect
+                        priority={priority}
+                        onChange={(p) => onUpdateTask(task.id, { tags: applyPriorityToTags(task.tags, p) })}
+                      />
+                    ) : (
+                      <PriorityChip priority={priority} />
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </section>
       ))}

@@ -77,7 +77,7 @@ export default function ProcessedNoteViewer({
   const renamePending = useRef(false)
 
   const { EditorComponent, appendText } = useMarkdownEditor()
-  const { isListening, isSupported, start, stop, transcript, reset } = useVoiceDictation()
+  const { isListening, isSupported, start, stop, transcript, interimTranscript, reset } = useVoiceDictation()
 
   useEffect(() => {
     if (filePath) loadFile(filePath)
@@ -394,7 +394,7 @@ export default function ProcessedNoteViewer({
           />
 
           <div key={filePath} className="milkdown-wrapper">
-            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={onWikilinkClick} tagSuggestions={tagSuggestions} wikilinkSuggestions={wikilinkSuggestions ?? []} />
+            <EditorComponent initialValue={editorBody} onChange={handleBodyChange} onWikilinkClick={onWikilinkClick} tagSuggestions={tagSuggestions} interimPreview={isListening ? interimTranscript : ''} wikilinkSuggestions={wikilinkSuggestions ?? []} />
           </div>
         </div>
       </div>

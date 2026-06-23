@@ -6,7 +6,7 @@ import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import DictateBtn from '../components/DictateBtn'
 import TrashMenuButton from '../components/TrashMenuButton'
 import TaskPanel from '../components/TaskPanel'
-import { readTasksIndex, resolveTaskEntry, retargetTasksForFile, appendTaskEntry, appendTaskEntries, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
+import { readTasksIndex, resolveTaskEntry, updateTaskEntry, retargetTasksForFile, appendTaskEntry, appendTaskEntries, setPlanTaskStatus, removePlanTask } from '../lib/tasksIndex'
 import { invalidateFileIndex } from '../lib/fileIndex'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
@@ -349,6 +349,12 @@ export default function ProjectViewer({
     await loadStats(filePath)
   }
 
+  const handleUpdateTask = async (id, patch) => {
+    await updateTaskEntry(readFile, writeFile, id, patch)
+    onTasksChanged?.()
+    await loadStats(filePath)
+  }
+
   const handlePlanChange = (newText) => {
     setSectionCurrentPlan(newText)
     sectionCurrentPlanRef.current = newText
@@ -601,6 +607,7 @@ export default function ProjectViewer({
             tasks={tasks}
             sections={['## Open Actions', '## Delegations', '## Decisions']}
             onResolve={handleResolveTask}
+            onUpdateTask={handleUpdateTask}
             onWikilinkClick={handleWikilinkClick}
           />
 

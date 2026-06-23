@@ -125,6 +125,20 @@ export async function unresolveTaskEntry(readFile, writeFile, entryId) {
   await writeTasksIndex(writeFile, updated)
 }
 
+export async function updateTaskEntry(readFile, writeFile, entryId, patch = {}) {
+  const existing = await readTasksIndex(readFile)
+  const today = new Date().toISOString().slice(0, 10)
+  const updated = existing.map((entry) => {
+    if (entry.id !== entryId) return entry
+    const next = { ...entry, last_updated: today }
+    if (typeof patch.title === 'string') next.title = patch.title
+    if (Array.isArray(patch.tags)) next.tags = patch.tags
+    if (typeof patch.section === 'string') next.section = patch.section
+    return next
+  })
+  await writeTasksIndex(writeFile, updated)
+}
+
 function cleanEntityWikilinks(text, aliases = []) {
   let out = String(text || '')
   for (const alias of aliases) {

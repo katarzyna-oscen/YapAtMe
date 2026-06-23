@@ -6,7 +6,7 @@ import { parseFrontmatter, buildFileContent } from '../lib/frontmatter'
 import TrashMenuButton from '../components/TrashMenuButton'
 import TaskPanel from '../components/TaskPanel'
 import { SecondaryButton } from '../components/ui/Buttons'
-import { readTasksIndex, resolveTaskEntry, disconnectTasksForFile, archiveTasksForFile, deleteTasksForFile, retargetTasksForFile } from '../lib/tasksIndex'
+import { readTasksIndex, resolveTaskEntry, updateTaskEntry, disconnectTasksForFile, archiveTasksForFile, deleteTasksForFile, retargetTasksForFile } from '../lib/tasksIndex'
 import { invalidateFileIndex } from '../lib/fileIndex'
 import { resolveWikilink, emitFileNotFoundToast } from '../lib/wikilinks'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -375,6 +375,12 @@ export default function PersonViewer({
     await loadStats(filePath)
   }
 
+  const handleUpdateTask = async (id, patch) => {
+    await updateTaskEntry(readFile, writeFile, id, patch)
+    onTasksChanged?.()
+    await loadStats(filePath)
+  }
+
   const handleWikilinkClick = async (name) => {
     const target = await resolveWikilink(name, listTree)
     if (!target) {
@@ -735,6 +741,7 @@ export default function PersonViewer({
             tasks={tasks}
             sections={['## Talk About', '## Delegate', '## My Actions']}
             onResolve={handleResolveTask}
+            onUpdateTask={handleUpdateTask}
             onWikilinkClick={handleWikilinkClick}
           />
 

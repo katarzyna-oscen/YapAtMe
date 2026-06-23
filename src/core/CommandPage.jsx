@@ -344,6 +344,7 @@ Instructions:
     const { resolveTaskEntry } = await import('../lib/tasksIndex')
     await resolveTaskEntry(readFile, writeFile, taskId)
     setTasks(prev => prev.filter(t => t.id !== taskId))
+    setNeedsCall(prev => prev.filter(item => item.id !== taskId))
   }
 
   const stats = {
