@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Packaging staging & cached runtimes (not source)
+build/cache/
+build/deb/
+build/mac/
+
+# Logs & editor
+*.log
+.DS_Store
+.vscode/*
+!.vscode/extensions.json

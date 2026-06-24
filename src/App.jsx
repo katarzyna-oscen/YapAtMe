@@ -10,6 +10,7 @@ import { TASKS_INDEX_CHANGED_EVENT } from './lib/tasksIndex'
 import { clearProcessedState } from './lib/processedNotes'
 import { parseFrontmatter, buildFileContent } from './lib/frontmatter'
 import { dbGet, dbPut } from './lib/db'
+import { hasStoredVaultSelection, isDesktopRuntime, pickVaultDirectory } from './lib/desktopFs'
 import OnboardingFlow from './core/OnboardingFlow'
 import FirstRunPopup from './core/FirstRunPopup'
 import Sidebar from './components/Sidebar'
@@ -82,6 +83,7 @@ export default function App() {
     deleteFile,
     renameFile,
     listTree,
+    loading,
     fileExists,
     needsReconnect,
     reconnect,
@@ -219,16 +221,21 @@ export default function App() {
       // If onboarding was explicitly reset (e.g. from Settings), show it regardless of stored handle
       const done = await dbGet('settings', 'onboardingComplete').catch(() => null)
       if (done === false) { setOnboardingNeeded(true); return }
-      // Existing user with a stored vault handle → skip onboarding
-      try {
-        const handle = await dbGet('handles', 'rootDir')
-        if (handle) { setOnboardingNeeded(false); return }
-      } catch {}
+      if (isDesktopRuntime()) {
+        const storedVault = await hasStoredVaultSelection().catch(() => false)
+        if (storedVault) { setOnboardingNeeded(false); return }
+      } else {
+        // Existing user with a stored vault handle → skip onboarding
+        try {
+          const handle = await dbGet('handles', 'rootDir')
+          if (handle) { setOnboardingNeeded(false); return }
+        } catch {}
+      }
       // No handle and no completion flag → new user
       setOnboardingNeeded(done !== true)
     }
-    check()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!loading) check()
+  }, [loading]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Show first-run popup once after new-user onboarding
   useEffect(() => {
@@ -280,10 +287,9 @@ export default function App() {
   // Wrapper for the sidebar "Change vault folder" button.
   // Picks folder, checks if truly empty → onboarding. Non-empty → connect normally.
   const handleChangeVaultFolder = useCallback(async () => {
-    if (typeof window.showDirectoryPicker !== 'function') return
     let handle
     try {
-      handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+      handle = await pickVaultDirectory()
     } catch (err) {
       if (err?.name === 'AbortError') return
       console.warn('Folder pick error:', err)

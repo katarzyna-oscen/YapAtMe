@@ -101,7 +101,7 @@ export default function ProcessedNoteViewer({
   useEffect(() => {
     if (!transcript) return
     const newPart = transcript.slice(prevTranscript.current.length)
-    if (newPart) appendText(`${newPart} `)
+    if (newPart) appendText(newPart)
     prevTranscript.current = transcript
   }, [transcript, appendText])
 

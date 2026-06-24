@@ -1074,6 +1074,11 @@ function matchesUnknownEntity(entity, type, name) {
   return entityType === String(type || '').trim().toLowerCase() && entityName === String(name || '').trim().toLowerCase()
 }
 
+function collapseDoubleSpaces(text) {
+  // Collapse runs of 2+ spaces/tabs into a single space, without touching newlines.
+  return String(text || '').replace(/[ \t]{2,}/g, ' ')
+}
+
 export function runCleanupPrepass(noteContent, allowedFiles = [], enabledModules = {}) {
   const enabledFolders = MODULE_REGISTRY
     .filter((moduleDef) => enabledModules[moduleDef.id] !== false)
@@ -1082,7 +1087,7 @@ export function runCleanupPrepass(noteContent, allowedFiles = [], enabledModules
   const scopedAllowedFiles = (allowedFiles || []).filter((path) => enabledFolders.includes(String(path || '').split('/')[0]))
   const prepass = runDeterministicEntityPrepass(stripExistingInlineTags(noteContent), scopedAllowedFiles, enabledModules)
   const linkableFolders = enabledFolders.filter((folder) => folder === 'people' || folder === 'projects')
-  const linkedNoteContent = normalizeNestedWikilinks(autoLinkKnownMentions(prepass.noteContent, scopedAllowedFiles, linkableFolders))
+  const linkedNoteContent = collapseDoubleSpaces(normalizeNestedWikilinks(autoLinkKnownMentions(prepass.noteContent, scopedAllowedFiles, linkableFolders)))
 
   return {
     noteContent: linkedNoteContent,

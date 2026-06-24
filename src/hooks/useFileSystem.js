@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { dbGet, dbPut } from '../lib/db'
+import { getStoredVaultHandle, isDesktopRuntime, persistVaultHandle, pickVaultDirectory } from '../lib/desktopFs'
 
 const HANDLE_KEY = 'rootDir'
 const TASK_CHECKBOX_CLEANUP_FLAG = 'task-checkbox-cleanup-v1'
@@ -147,6 +148,20 @@ export function useFileSystem() {
 
   // Restore handle from previous session
   useEffect(() => {
+    if (isDesktopRuntime()) {
+      getStoredVaultHandle()
+        .then((handle) => {
+          if (!handle) return
+          setRootHandle(handle)
+          setFolderName(handle.name)
+          setVaultReady(true)
+          setNeedsReconnect(false)
+        })
+        .catch(() => {})
+        .finally(() => setLoading(false))
+      return
+    }
+
     dbGet('handles', HANDLE_KEY).then(async handle => {
       if (handle) {
         const perm = await handle.queryPermission({ mode: 'readwrite' })
@@ -163,15 +178,16 @@ export function useFileSystem() {
   }, [])
 
   const openFolder = useCallback(async () => {
-    if (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function') {
+    if (!isDesktopRuntime() && (typeof window === 'undefined' || typeof window.showDirectoryPicker !== 'function')) {
       setPickerError('Folder access is not supported in this browser. Use Chrome, Edge, or another Chromium-based browser.')
       return null
     }
 
     try {
       setPickerError(null)
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
-      await dbPut('handles', HANDLE_KEY, handle)
+      const handle = await pickVaultDirectory()
+      if (isDesktopRuntime()) await persistVaultHandle(handle)
+      else await dbPut('handles', HANDLE_KEY, handle)
       await initVault(handle)
       setRootHandle(handle)
       setFolderName(handle.name)
@@ -208,7 +224,8 @@ export function useFileSystem() {
   // Store handle in state + DB without calling initVault.
   // Used when onboarding will handle vault initialisation.
   const connectHandle = useCallback(async (handle) => {
-    await dbPut('handles', HANDLE_KEY, handle)
+    if (isDesktopRuntime()) await persistVaultHandle(handle)
+    else await dbPut('handles', HANDLE_KEY, handle)
     setRootHandle(handle)
     setFolderName(handle.name)
     setNeedsReconnect(false)
@@ -216,7 +233,8 @@ export function useFileSystem() {
 
   // Accept an already-picked handle and fully connect (incl. initVault).
   const openFolderWithHandle = useCallback(async (handle) => {
-    await dbPut('handles', HANDLE_KEY, handle)
+    if (isDesktopRuntime()) await persistVaultHandle(handle)
+    else await dbPut('handles', HANDLE_KEY, handle)
     await initVault(handle)
     setRootHandle(handle)
     setFolderName(handle.name)
@@ -225,6 +243,18 @@ export function useFileSystem() {
   }, [])
 
   const reconnect = useCallback(async () => {
+    if (isDesktopRuntime()) {
+      const handle = await getStoredVaultHandle()
+      if (!handle) return null
+      await initVault(handle)
+      setRootHandle(handle)
+      setFolderName(handle.name)
+      setNeedsReconnect(false)
+      setVaultReady(true)
+      setPickerError(null)
+      return handle
+    }
+
     const handle = await dbGet('handles', HANDLE_KEY)
     if (!handle) return null
     try {

@@ -515,12 +515,16 @@ function fmtGeneratedAt(isoStr) {
   return `Generated ${day}, ${time}`
 }
 
+// Strip any leading list marker the model might emit so the checkmark icon
+// rendered below is the only bullet (avoids a doubled bullet point).
+// Handles -, *, +, •, ‣, ·, –, —, and numbered/lettered markers like "1." or "a)".
+const LEADING_MARKER_RE = /^\s*(?:[-*+•‣·–—]|\d+[.)]|[a-zA-Z][.)])\s+/
+
 function renderUpdatesText(text) {
   if (!text) return null
   const lines = String(text).split('\n').filter(l => l.trim())
   return lines.map((line, i) => {
-    const bullet = line.match(/^[-*]\s+(.+)$/)
-    const content = bullet ? bullet[1] : line
+    const content = line.replace(LEADING_MARKER_RE, '').trim()
     return (
       <li key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
         <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="oklch(0.74 0.14 165)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: '0 0 11px', marginTop: 3 }}>
@@ -636,21 +640,25 @@ function SummaryRow({
         </div>
 
         {/* Updates */}
-        <div style={{ ...cardStyle(80), maxHeight: 340 }}>
+        <div style={cardStyle(80)}>
           <h3 style={{ fontSize: 15.5, fontWeight: 600, color: 'var(--text)', margin: '0 0 8px', lineHeight: 1.3, letterSpacing: '-0.005em', flexShrink: 0 }}>
             Updates
           </h3>
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingRight: 10 }}>
-            {summariesLoading
-              ? <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>Generating updates…</span>
-              : dailyUpdates?.text
-                ? (
-                  <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-                    {renderUpdatesText(dailyUpdates.text)}
-                  </ul>
-                )
-                : <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>No updates yet.</span>
-            }
+          {/* Relative wrapper + absolute scroll area: the list never expands the
+              card, so this column matches the height of its siblings on resize. */}
+          <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+            <div style={{ position: 'absolute', inset: 0, overflowY: 'auto', paddingRight: 10 }}>
+              {summariesLoading
+                ? <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>Generating updates…</span>
+                : dailyUpdates?.text
+                  ? (
+                    <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                      {renderUpdatesText(dailyUpdates.text)}
+                    </ul>
+                  )
+                  : <span style={{ color: 'var(--text-very-dim)', fontSize: 13 }}>No updates yet.</span>
+              }
+            </div>
           </div>
           {(dailyUpdates?.generated_at || dailyUpdates?.sourceComment) && (
             <div style={{ paddingTop: 12, marginTop: 8, borderTop: '1px solid var(--border-subtle)', fontSize: 11, letterSpacing: '0.04em', color: 'var(--text-very-dim)', flexShrink: 0 }}>

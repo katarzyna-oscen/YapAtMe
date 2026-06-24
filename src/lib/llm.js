@@ -147,6 +147,50 @@ function isRetryableLLMError(message = '') {
     || m.includes('504')
 }
 
+async function requestText(url, options) {
+  if (typeof window !== 'undefined' && window.electronAPI?.httpRequest) {
+    const response = await window.electronAPI.httpRequest({
+      url,
+      method: options?.method,
+      headers: options?.headers,
+      body: options?.body,
+    })
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      text: async () => response.body,
+    }
+  }
+
+  // Standalone launcher (tools/yapatme.cjs) injects this marker. Route provider
+  // calls through the local same-origin proxy so there are no CORS issues and
+  // we don't need Chrome's unstable --disable-web-security flag.
+  if (typeof window !== 'undefined' && window.__YAPATME_PROXY__) {
+    const response = await fetch(window.__YAPATME_PROXY__, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        method: options?.method,
+        headers: options?.headers,
+        body: options?.body,
+      }),
+    })
+    const data = await response.json()
+    if (data.error) throw new Error(data.error)
+    return {
+      ok: data.ok,
+      status: data.status,
+      statusText: data.statusText,
+      text: async () => data.body,
+    }
+  }
+
+  return fetch(url, options)
+}
+
 async function parseJsonResponse(res) {
   const raw = await res.text()
   if (!raw || !raw.trim()) {
@@ -190,7 +234,7 @@ async function callOpenAICompat(messages, systemPrompt, { apiKey, model, baseUrl
       max_tokens: maxTokens,
     }
 
-    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+    const res = await requestText(url, { method: 'POST', headers, body: JSON.stringify(body) })
     if (!res.ok) {
       const err = await res.text().catch(() => res.statusText)
       throw new Error(`LLM error ${res.status}: ${err}`)
@@ -223,7 +267,7 @@ async function callAnthropic(messages, systemPrompt, { apiKey, model, baseUrl },
         messages,
       }
 
-      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+      const res = await requestText(url, { method: 'POST', headers, body: JSON.stringify(body) })
       if (!res.ok) {
         const err = await res.text().catch(() => res.statusText)
         const modelNotFound = res.status === 404 && /not_found_error|model/i.test(String(err || ''))

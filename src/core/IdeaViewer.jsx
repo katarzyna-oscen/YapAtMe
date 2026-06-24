@@ -505,7 +505,7 @@ export default function IdeaViewer({
 
   useEffect(() => {
     if (!transcript) return
-    const newPart = transcript.slice(prevTranscript.current.length)
+    const newPart = transcript.slice(prevTranscript.current.length).replace(/^[\s.]+/, '')
     if (newPart) setSectionDeveloping((prev) => prev + (prev ? '\n' : '') + newPart.trim())
     prevTranscript.current = transcript
   }, [transcript])

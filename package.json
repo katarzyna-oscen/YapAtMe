@@ -1,12 +1,44 @@
 {
   "name": "yapatme",
+  "desktopName": "yapatme",
   "version": "0.1.0",
+  "description": "YapAtMe desktop note processing workspace",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
+  "author": {
+    "name": "Katarzyna Duda",
+    "email": "katarzyna.duda@canonical.com"
+  },
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "build": "vite build",
-    "preview": "vite preview"
+    "build:desktop": "vite build && electron-builder --linux AppImage deb",
+    "preview": "vite preview",
+    "app": "vite build && node tools/yapatme.cjs",
+    "app:launch": "node tools/yapatme.cjs",
+    "app:install": "node tools/install-launcher.cjs",
+    "pkg:deb": "node tools/build-deb.cjs",
+    "pkg:mac": "node tools/build-mac.cjs"
+  },
+  "build": {
+    "appId": "com.yapatme.app",
+    "productName": "YapAtMe",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "maintainer": "Katarzyna Duda <katarzyna.duda@canonical.com>",
+      "syncDesktopName": true,
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office"
+    }
   },
   "dependencies": {
     "@milkdown/core": "^7.5.0",
@@ -28,7 +60,11 @@
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.2.1",
+    "electron": "^37.1.0",
+    "electron-builder": "^26.0.12",
     "tailwindcss": "^4.0.0",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.3"
   }
 }

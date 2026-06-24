@@ -607,7 +607,7 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
     if (!transcript) return
     const newPart = transcript.slice(prevTranscript.current.length)
     if (newPart) {
-      appendText(newPart + ' ')
+      appendText(newPart)
     }
     prevTranscript.current = transcript
   }, [transcript]) // eslint-disable-line react-hooks/exhaustive-deps
