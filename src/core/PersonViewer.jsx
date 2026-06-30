@@ -214,6 +214,13 @@ export default function PersonViewer({
   const [renameDialog, setRenameDialog] = useState(null)
 
   const saveTimer = useRef(null)
+  // True while a rename is in flight — suppresses debounced autosaves that
+  // would otherwise resurrect the old file or race the rename write.
+  const renamingRef = useRef(false)
+  // The path currently loaded into the editor. A debounced autosave scheduled
+  // before a rename closes over the old path; this ref lets save() detect and
+  // skip those stale writes so a renamed file is never re-created.
+  const activePathRef = useRef(null)
 
   const { EditorComponent, appendText } = useMarkdownEditor()
   const { isListening, isSupported, start, stop, transcript, reset } = useVoiceDictation()
@@ -237,6 +244,8 @@ export default function PersonViewer({
   }, [transcript, appendText])
 
   const loadFile = async (path) => {
+    activePathRef.current = path
+    renamingRef.current = false
     setLoading(true)
     setSaveStatus('idle')
     setLastSavedTime('')
@@ -304,6 +313,10 @@ export default function PersonViewer({
 
   const save = useCallback(async (body) => {
     if (!filePath) return
+    // Skip stale/racing writes: a rename is in progress, or this save closed
+    // over a path that is no longer the active file (e.g. after a rename).
+    if (renamingRef.current) return
+    if (activePathRef.current && filePath !== activePathRef.current) return
 
     setSaveStatus('saving')
     const today = new Date().toISOString().slice(0, 10)
@@ -400,40 +413,64 @@ export default function PersonViewer({
 
     if (newSlug === currentSlug || !newSlug) return
 
-    // Slug changes — cancel any pending autosave and show rename confirmation
+    // Slug changes — cancel any pending autosave
     clearTimeout(saveTimer.current)
     const newPath = `${folder}/${newSlug}.md`
-    setRenameDialog({ oldPath: filePath, newPath, oldSlug: currentSlug, newSlug })
+    const info = { oldPath: filePath, newPath, oldSlug: currentSlug, newSlug }
+
+    // Freshly-created, never-named files (untitled-*) have no inbound
+    // references yet, so rename silently — no confirmation dialog needed.
+    if (/^untitled/i.test(currentSlug)) {
+      runRename(info)
+      return
+    }
+    setRenameDialog(info)
   }
 
   const executeRename = async () => {
     if (!renameDialog) return
-    const { oldPath, newPath, oldSlug, newSlug } = renameDialog
+    const info = renameDialog
     setRenameDialog(null)
+    await runRename(info)
+  }
+
+  const runRename = async ({ oldPath, newPath, oldSlug, newSlug }) => {
+    // Suppress debounced autosaves while we move the file so a stale write
+    // can't resurrect the old path or clobber the destination mid-rename.
+    renamingRef.current = true
+    clearTimeout(saveTimer.current)
+
+    const today = new Date().toISOString().slice(0, 10)
+    const fields = {
+      type: 'person',
+      full_name: fullName.trim() || 'Untitled',
+      relationship,
+      role,
+      last_updated: today,
+    }
+    const content = buildFileContent(fields, editorBody)
 
     try {
-      // Check for collision only when it's not a case-only slug change
+      // Collision: the target name is already taken by a different file.
+      // Keep the user's typed name (never revert to the "Untitled" slug);
+      // just save in place under the current path and let them pick another.
       const isSlugCaseOnly = oldSlug.toLowerCase() === newSlug.toLowerCase()
       if (!isSlugCaseOnly) {
-        try {
-          const exists = await fileExists(newPath)
-          if (exists) {
-            setFullName(oldSlug.replace(/-/g, ' '))
-            return
-          }
-        } catch {}
+        let exists = false
+        try { exists = await fileExists(newPath) } catch {}
+        if (exists) {
+          renamingRef.current = false
+          await writeFile(oldPath, content)
+          onDisplayNameChanged?.(oldPath, fullName.trim() || 'Untitled')
+          window.dispatchEvent(new CustomEvent('memostack:toast', {
+            detail: { message: `A person named “${fullName.trim()}” already exists` },
+          }))
+          return
+        }
       }
 
       // Write new content to new path, then delete old path
-      const today = new Date().toISOString().slice(0, 10)
-      const fields = {
-        type: 'person',
-        full_name: fullName.trim() || 'Untitled',
-        relationship,
-        role,
-        last_updated: today,
-      }
-      await writeFile(newPath, buildFileContent(fields, editorBody))
+      await writeFile(newPath, content)
       if (oldPath.toLowerCase() !== newPath.toLowerCase()) {
         await deleteFile(oldPath)
       }
@@ -456,8 +493,11 @@ export default function PersonViewer({
       }
 
       await invalidateFileIndex()
+      onDisplayNameChanged?.(newPath, fullName.trim() || 'Untitled')
+      activePathRef.current = newPath
       onFileRenamed?.(newPath)
     } catch (err) {
+      renamingRef.current = false
       console.error('Rename failed:', err.message)
     }
   }

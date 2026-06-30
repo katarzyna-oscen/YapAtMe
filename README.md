@@ -49,6 +49,9 @@ npm run dev          # opens http://localhost:5173
 
 A real desktop app with an icon in your app grid. Node.js is bundled; you only need Google Chrome.
 
+Installers are published under GitHub Releases (not in the repository file list):
+https://github.com/katarzyna-oscen/YapAtMe/releases
+
 ### Install
 
 1. Install **Google Chrome** if you don't have it: <https://www.google.com/chrome/>
@@ -69,6 +72,9 @@ YapAtMe opens in its own Google Chrome window. Pick your notes folder once and y
 ## 3. macOS standalone app
 
 A real Mac app. Node.js is bundled; you only need Google Chrome.
+
+Installers are published under GitHub Releases (not in the repository file list):
+https://github.com/katarzyna-oscen/YapAtMe/releases
 
 ### Install
 
