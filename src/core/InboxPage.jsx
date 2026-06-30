@@ -843,6 +843,10 @@ function InboxEditor({ filePath, readFile, writeFile, deleteFile, listTree, sett
       //   - content begins with a dated log line "[[DD-MM-YYYY]] — ..." / "DD-MM-YYYY — ..."
       // Tasks are imperative and never carry this dated-narrative shape.
       const isMentionShaped = (change) => {
+        // An idea marker is authoritative — its dated-log content shape
+        // ("[[DD-MM-YYYY]] — title") collides with the mention shape below,
+        // so guard it first or ideas get misrouted to Recent Mentions.
+        if (String(change?.marker || '').toLowerCase() === 'idea') return false
         const title = String(change?.title || '').trim().toLowerCase()
         if (title === 'mention') return true
         const content = String(change?.content || '').trim()

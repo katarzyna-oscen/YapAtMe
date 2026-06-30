@@ -1,5 +1,10 @@
 # YapAtMe
 
+> **Current version: v0.2.0** — the running version is also shown in the app
+> (sidebar footer and the onboarding landing screen). See `package.json` for the
+> authoritative value and `documentation/PROJECT_CURRENT_STATE_SUMMARY.md` for
+> what changed.
+
 YapAtMe is a local-first, AI-powered notes app. You dictate or write quick notes into an inbox; the AI reads each note and automatically routes the content into the right place — people, projects, ideas, and tasks — inside a folder of plain Markdown files that lives on your own computer.
 
 - Your notes stay on your machine (a folder you pick). Nothing is uploaded.

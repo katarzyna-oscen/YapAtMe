@@ -325,6 +325,9 @@ function WelcomeScreen({ act }) {
       <Notice tone="amber" icon="warn">
         YapAtMe requires an AI API key to process notes. You'll set this up in the next steps.
       </Notice>
+      <div style={{ marginTop: 14, textAlign: 'center', fontSize: 11.5, letterSpacing: '0.04em', color: 'var(--text-very-dim)' }}>
+        YapAtMe v{__APP_VERSION__}
+      </div>
     </div>
   )
 }

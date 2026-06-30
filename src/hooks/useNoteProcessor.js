@@ -189,9 +189,16 @@ Rules:
 - Decision routing rule: decisions belong on PROJECT files, not person files. If a decision involves both a person and a project, route it to the project file. People files do not have a Decisions section. If no project file is identifiable, output target_file: null and module: "unattached".
 - Do not include "- [ ]" in task content. Return plain task text in content and title.
 - Idea marker rules:
-  ALWAYS emit an idea change for any sentence that proposes, imagines, or explores a new concept, feature, or workflow improvement — even if the writer is not committing to it.
-  Phrases like "been thinking about", "want to explore", "idea:", "what if", "could be interesting" are strong signals.
-  Do NOT skip ideas just because they feel speculative — capture them all.
+  DEFINITION — an idea is a NEW concept, feature, product, workflow, or improvement the writer is proposing, imagining, or exploring. It describes something that could be built or done differently in the future. The writer does not need to commit to it; speculation counts.
+  Emit an idea change for ANY sentence that fits this definition, however it is phrased. Do not rely on specific keywords — judge the meaning. People express ideas in many ways, e.g.:
+    "been thinking about…", "I was thinking we could…", "I have a thought:…", "what if we…", "we could build…", "maybe we should…", "it would be cool/useful if…", "idea: …", "X gave me a good idea to…", "had an idea to…", "wouldn't it be great to…", "we should consider adding…".
+  When another person suggested the idea ("Isaac gave me a good idea to add a QR code generator"), still emit ONE idea for the proposed concept itself (e.g. "Add a QR code generator to the slide deck").
+  NOT an idea (do NOT emit an idea change for these):
+    • A concrete task the writer must do ("I need to email the agency") → that is an action/follow-up, not an idea.
+    • A past-tense recap of something already built or done ("we shipped the QR feature last week") → mention only.
+    • The word "idea" used non-proposally: "I have no idea", "any idea why…?", "that was a bad idea", "good idea, thanks" with no concept attached.
+    • A pure opinion or reaction with no new concept ("the deck looks great").
+  If a sentence both proposes a concept AND contains a follow-up action, emit BOTH (one idea + one task).
   Route idea markers to: target_file: ideas/backlog.md, target_section: ## Backlog, module: ideas.
   Content format for ideas: [[DD-MM-YYYY]] — [one sentence describing the idea]
   Where DD-MM-YYYY is today's note date.
@@ -241,6 +248,45 @@ Rules:
     "title": "Voice shortcut to inbox",
     "module": "ideas"
   }
+
+  Input: "Isaac gave me a good idea to include a QR code generator in the slide deck as a feature."
+  Output:
+  {
+    "target_file": "ideas/backlog.md",
+    "target_section": "## Backlog",
+    "content": "[[DD-MM-YYYY]] — Add a QR code generator to the slide deck",
+    "marker": "idea",
+    "title": "QR code generator in slide deck",
+    "module": "ideas"
+  }
+  (Reason: phrased as "X gave me an idea to…" — emit the proposed concept itself, not a task for Isaac.)
+
+  Input: "I was thinking we could let users theme the dashboard, and I should ask Diana if design has bandwidth."
+  Output:
+  { "changes": [
+    {
+      "target_file": "ideas/backlog.md",
+      "target_section": "## Backlog",
+      "content": "[[DD-MM-YYYY]] — Let users theme the dashboard",
+      "marker": "idea",
+      "title": "User-themeable dashboard",
+      "module": "ideas"
+    },
+    {
+      "target_file": "people/Diana.md",
+      "target_section": "## Talk About",
+      "content": "Ask if design has bandwidth for theming",
+      "marker": "follow-up",
+      "title": "Ask Diana about design bandwidth",
+      "module": "people"
+    }
+  ] }
+  (Reason: one sentence holds both a proposed concept AND a follow-up — emit both.)
+
+  Input: "I have no idea why the build keeps failing."
+  Output:
+  { "changes": [] }
+  (Reason: "no idea" is not a proposal — there is no new concept here. Not an idea. Any build-fix action would be handled by the action rules, not as an idea.)
 - Only emit changes targeting files in Valid write targets.
 - Exception 1: when target_file is null and module is "unattached", the change is valid even without a matching file in Valid write targets.
 - Exception 2: idea marker changes targeting ideas/backlog.md are ALWAYS valid regardless of whether ideas/backlog.md appears in Valid write targets.
@@ -995,17 +1041,28 @@ function detectUrgencyActions(noteContent) {
   return out
 }
 
-// Deterministic idea detection. Proposal / exploration sentences are an instant
-// trigger for an idea — they must always reach ideas/backlog.md even if the LLM
-// skipped them (e.g. it mistook the subjunctive "what if we built" for a recap).
+// Deterministic idea detection. This is a HIGH-PRECISION SAFETY NET, not the
+// primary classifier — the LLM is responsible for recall (catching the wide
+// variety of ways people phrase an idea). This fallback only fires on a small
+// set of unambiguous, proposal-shaped triggers so that obvious ideas still
+// reach ideas/backlog.md when the LLM skips them, without inventing ideas the
+// LLM wouldn't. Keep these patterns tight; broaden the PROMPT, not this regex.
+//
 // "Intro" signals introduce a new idea; "support" signals (e.g. "could be huge")
 // are evaluative reactions that merely back an idea — they never spawn their own.
-const IDEA_INTRO_RE = /\b(what\s+if|how\s+about|idea:|thinking\s+about|been\s+thinking|want\s+to\s+(?:explore|try|build)|we\s+could\s+(?:build|make|create|try)|maybe\s+we\s+(?:could|should)|imagine\s+(?:if|a)|wouldn'?t\s+it\s+be)\b/i
+const IDEA_INTRO_RE = /(?:\bidea:|\bwhat\s+if\s+(?:we|i|you)\b|\bhow\s+about\s+we\b|\bwe\s+could\s+(?:build|make|create|try|add|automate|introduce|include)\b|\bmaybe\s+we\s+(?:could|should)\b|\bwant\s+to\s+(?:explore|try|build|prototype)\b|\bimagine\s+(?:if|a)\b|\bwouldn'?t\s+it\s+be\s+(?:great|cool|nice|useful)\b|\bgave\s+(?:me|us)\s+(?:a|an|the)\s+(?:\w+\s+)?idea\s+to\b|\bhad\s+(?:a|an|the)\s+(?:\w+\s+)?idea\s+to\b|\bi\s+had\s+an?\s+idea\b|\bbeen\s+thinking\s+about\b)/i
 const IDEA_SUPPORT_RE = /\bcould\s+be\s+(?:huge|cool|interesting|nice|useful|great)\b/i
+
+// Negation / evaluative guard — phrases where the word "idea" does NOT signal a
+// new proposal ("no idea", "any idea?", "bad idea"). A sentence matching this is
+// skipped by the deterministic detector so it never spawns a false idea. Note:
+// "good/great idea" is intentionally NOT guarded — "gave me a good idea to …"
+// is a genuine proposal.
+const IDEA_NEGATION_RE = /\b(?:no|any|bad|terrible|stupid|dumb|crazy|silly|not\s+a|isn'?t\s+a|wasn'?t\s+a)\s+(?:\w+\s+){0,2}?idea\b/i
 
 // Lead-in fragments stripped (repeatedly) from the head of an idea sentence so
 // the title is the bare concept rather than the framing.
-const IDEA_LEADIN_RE = /^\s*(?:also\s+|then\s+)?(?:had\s+a\s+thought:?\s*|i\s+had\s+an?\s+idea:?\s*|idea:\s*|thinking\s+about\s+|been\s+thinking\s+about\s+|what\s+if\s+(?:we\s+)?|how\s+about\s+(?:we\s+)?|maybe\s+we\s+(?:could|should)\s+|we\s+could\s+|imagine\s+(?:if\s+)?(?:we\s+)?|wouldn'?t\s+it\s+be\s+(?:great|cool|nice|useful)\s+(?:if\s+)?(?:we\s+)?)/i
+const IDEA_LEADIN_RE = /^\s*(?:also\s+|then\s+)?(?:(?:\[\[[^\]]+\]\]|[A-Z][\w.]+)\s+gave\s+(?:me|us)\s+(?:a|an|the)\s+(?:\w+\s+)?idea\s+(?:to|of|for|about)\s+|gave\s+(?:me|us)\s+(?:a|an|the)\s+(?:\w+\s+)?idea\s+(?:to|of|for|about)\s+|had\s+a\s+thought:?\s*|i\s+had\s+an?\s+idea:?\s*|idea:\s*|thinking\s+about\s+|been\s+thinking\s+about\s+|what\s+if\s+(?:we\s+)?|how\s+about\s+(?:we\s+)?|maybe\s+we\s+(?:could|should)\s+|we\s+could\s+|imagine\s+(?:if\s+)?(?:we\s+)?|wouldn'?t\s+it\s+be\s+(?:great|cool|nice|useful)\s+(?:if\s+)?(?:we\s+)?)/i
 
 function buildIdeaTitle(sentence) {
   let t = normalizeNestedWikilinks(String(sentence || ''))
@@ -1015,6 +1072,13 @@ function buildIdeaTitle(sentence) {
     prev = t
     t = t.replace(IDEA_LEADIN_RE, '').trim()
   } while (t !== prev && t.length > 0)
+  // Drop a trailing dangling clause that starts a separate thought
+  // (e.g. "… as a feature and I might consider it" → "… as a feature"),
+  // but only when enough of the idea remains.
+  const clauseCut = t.search(/\s+(?:and|but|so|although|though|because)\s+(?:i|we|it|they|he|she)\b/i)
+  if (clauseCut > 0 && t.slice(0, clauseCut).trim().split(/\s+/).length >= 3) {
+    t = t.slice(0, clauseCut).trim()
+  }
   t = t.replace(/[.!?]+$/, '').trim()
   // Cap to a tidy length.
   const words = t.split(/\s+/)
@@ -1027,6 +1091,9 @@ function detectIdeas(noteContent) {
   for (const raw of splitIntoSentences(stripHeadingLines(noteContent))) {
     const sentence = String(raw || '').trim()
     if (!sentence) continue
+    // Skip evaluative / negated uses of "idea" ("no idea", "bad idea") so the
+    // safety net never invents an idea from them.
+    if (IDEA_NEGATION_RE.test(sentence)) continue
     // Only an intro signal spawns a new idea. A support-only sentence is an
     // evaluative reaction to the preceding idea — skip it to avoid duplicates.
     if (!IDEA_INTRO_RE.test(sentence)) continue

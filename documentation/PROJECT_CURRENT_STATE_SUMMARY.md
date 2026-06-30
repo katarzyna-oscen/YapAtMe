@@ -1,6 +1,10 @@
 # MemoStack — Current State Summary and Handover Audit
 
-Date: 2026-06-04 (updated)
+Date: 2026-06-30 (updated)
+
+Current app version: **v0.2.0** (see `package.json`). The running version is shown
+in the app sidebar footer and on the onboarding landing screen, so anyone who
+downloads the repo can tell which build they have.
 
 ## Scope of this document
 
@@ -1127,4 +1131,72 @@ The frontmatter parser treated the leading `[` and trailing `]` as YAML inline-a
 |------|--------|
 | `src/App.jsx` | `handleChangeVaultFolder`: added `await invalidateFileIndex()` call to clear global IndexedDB cache when switching vaults; added `setEntityDisplayNames(new Map())` and `setTree({})` to clear sidebar cache |
 | `src/components/MarkdownEditor.jsx` | Added reset of `_knownWikilinksRef.current` and `_knownWikilinksReadyRef.current` in effect watching `wikilinkSuggestions` to ensure stale module-level refs don't linger |
+
+## Session update — 2026-06-30
+
+### App versioning surfaced in the UI
+
+**Why:** The app changes frequently. Someone who clones the repo or installs a
+`.deb` had no way to tell which build they were running.
+
+**Implementation:**
+- `package.json` `version` is the single source of truth. Bumped to **0.2.0**.
+- `vite.config.js` injects it as a compile-time global `__APP_VERSION__` via Vite
+  `define` (reads `package.json` at config load).
+- The version is rendered as `v{__APP_VERSION__}` in the sidebar footer
+  (`src/components/Sidebar.jsx`) and as `YapAtMe v{__APP_VERSION__}` on the
+  onboarding landing screen (`src/core/OnboardingFlow.jsx`).
+- Note: a `vite.config.js` change requires a dev-server restart (HMR does not pick
+  up `define` changes).
+
+### New-person name reverting to "Untitled"
+
+**Problem:** Creating a new person and typing a name reverted it to "Untitled".
+
+**Root cause:** A rename-confirmation dialog introduced for existing people also
+fired for brand-new `untitled-*` files; its collision / cancel branch reset the
+name back to the old slug, and a racing debounced autosave could resurrect the
+old file.
+
+**Fix (`src/core/PersonViewer.jsx`):**
+- Fresh `untitled-*` files rename silently (no dialog); named files still confirm.
+- Added `renamingRef` / `activePathRef` guards so autosave skips stale/racing
+  writes during a rename.
+- On a real name collision the typed name is kept and a toast is shown instead of
+  reverting to "Untitled".
+
+### Idea detection — proposals were silently swallowed
+
+**Problem:** Clear idea sentences (e.g. "[[Isaac]] gave me a good idea to include
+a QR code generator in the slide deck") never reached `ideas/backlog.md`; the
+inbox reported "No tasks found".
+
+**Root causes (two, stacked):**
+1. The deterministic idea regex didn't match several natural phrasings, and the
+   LLM prompt under-specified what an idea is.
+2. **Primary bug:** A detected idea's content shape `"[[DD-MM-YYYY]] — title"`
+   collided with the *mention* shape in `InboxPage.isMentionShaped`, so the idea
+   was misclassified as a Recent Mention — auto-applied and dropped from the
+   review queue.
+
+**Fixes:**
+- `src/hooks/useNoteProcessor.js` (Option B): high-precision `IDEA_INTRO_RE`,
+  a new `IDEA_NEGATION_RE` guard ("no idea", "bad idea"), lead-in stripping for
+  clean titles, and a richer task system prompt (idea definition, a "NOT an idea"
+  list, and few-shot examples). The LLM owns recall; the regex is a narrow
+  high-precision safety net that guarantees obvious ideas reach the backlog.
+- `src/core/InboxPage.jsx`: `isMentionShaped` now treats `marker === 'idea'` as
+  authoritative and returns `false`, so ideas are never misrouted to mentions.
+
+### Files changed in this session (2026-06-30)
+
+| File | Change |
+|------|--------|
+| `package.json` | Version bumped to `0.2.0` |
+| `vite.config.js` | Inject `__APP_VERSION__` global from `package.json` via `define` |
+| `src/components/Sidebar.jsx` | Footer version label `v{__APP_VERSION__}` |
+| `src/core/OnboardingFlow.jsx` | Landing-screen version label `YapAtMe v{__APP_VERSION__}` |
+| `src/core/PersonViewer.jsx` | New-person name no longer reverts to "Untitled"; rename guards + collision toast |
+| `src/hooks/useNoteProcessor.js` | Idea detection Option B: tightened intro regex, negation guard, richer LLM prompt |
+| `src/core/InboxPage.jsx` | `isMentionShaped` treats `idea` marker as authoritative so ideas route to backlog |
 

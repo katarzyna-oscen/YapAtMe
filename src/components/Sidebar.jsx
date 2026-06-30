@@ -970,6 +970,17 @@ export default function Sidebar({
       >
         <NavItem icon="cog" label="Settings" active={page === 'settings'} onClick={() => onNavigate('settings')} />
         <NavItem icon="folder" label="Change vault folder" onClick={onOpenFolder} />
+        <div
+          style={{
+            padding: '6px 12px 2px',
+            fontSize: 11,
+            letterSpacing: '0.04em',
+            color: 'var(--text-dim)',
+            opacity: 0.7,
+          }}
+        >
+          v{__APP_VERSION__}
+        </div>
       </div>
     </aside>
   )
